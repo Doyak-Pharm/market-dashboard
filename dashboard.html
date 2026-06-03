@@ -1,0 +1,3201 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Market Sentiment Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js">
+
+
+// ── DFII10 · BEI 렌더링 ──
+function renderRateSummary(tnxData, dfii10Data, beiData) {
+  const el = document.getElementById('rate-summary');
+  if (!el) return;
+
+  const fmt = (d, digits=3) => d && d.ok
+    ? `<span style="color:${d.current < 0 ? '#f09595' : '#c0dd97'}">${d.current.toFixed(digits)}%</span>`
+    : '<span style="color:#555">—</span>';
+
+  const chgArrow = (d) => {
+    if (!d || !d.ok || !d.history || d.history.length < 2) return '';
+    const chg = d.current - d.history[d.history.length - 2].close;
+    return chg > 0
+      ? `<span style="color:#f09595; font-size:10px;"> ▲${Math.abs(chg).toFixed(3)}</span>`
+      : `<span style="color:#c0dd97; font-size:10px;"> ▼${Math.abs(chg).toFixed(3)}</span>`;
+  };
+
+  el.innerHTML = `
+    <div class="rate-cell">
+      <div class="rate-cell-label">명목금리 (10Y)</div>
+      <div class="rate-cell-val">${fmt(tnxData)}${chgArrow(tnxData)}</div>
+      <div class="rate-cell-sub">^TNX</div>
+    </div>
+    <div class="rate-cell">
+      <div class="rate-cell-label">실질금리 (TIPS)</div>
+      <div class="rate-cell-val">${fmt(dfii10Data)}${chgArrow(dfii10Data)}</div>
+      <div class="rate-cell-sub">DFII10</div>
+    </div>
+    <div class="rate-cell">
+      <div class="rate-cell-label">기대 인플레 (BEI)</div>
+      <div class="rate-cell-val">${fmt(beiData)}${chgArrow(beiData)}</div>
+      <div class="rate-cell-sub">TNX − DFII10</div>
+    </div>
+  `;
+}
+
+function renderGoldRegime(goldData, dfii10Data, spxData, dxyData) {
+  const container = document.getElementById('gold-interp-dynamic');
+  const subtitle  = document.getElementById('gold-interp-subtitle');
+  if (!container) return;
+
+  if (!goldData || !goldData.ok || !dfii10Data || !dfii10Data.ok) {
+    if (subtitle) subtitle.textContent = '데이터 부족';
+    return;
+  }
+
+  // 방향 판단: 최근 5일 평균 변화
+  const recentAvg = (data, n=5) => {
+    if (!data.ok || data.history.length < n+1) return 0;
+    const h = data.history;
+    return h[h.length-1].close - h[h.length-1-n].close;
+  };
+
+  const goldDir  = recentAvg(goldData);   // 양수 = 금 상승
+  const rateDir  = recentAvg(dfii10Data); // 양수 = 실질금리 상승
+  const spxDir   = spxData  && spxData.ok  ? recentAvg(spxData)  : 0;
+  const dxyDir   = dxyData  && dxyData.ok  ? recentAvg(dxyData)  : 0;
+
+  const real = dfii10Data.current.toFixed(3);
+  const bei  = dfii10Data.ok ? '—' : '—';
+
+  let regime, bannerCls, bannerText;
+
+  if (goldDir > 0 && rateDir < 0) {
+    regime = '🟢 금 강세 전형 환경';
+    bannerCls = 'bullish';
+    bannerText = `현재 금↑ + 실질금리↓ (${real}%) → 금리 인하 기대 or 인플레 헤지 국면`;
+  } else if (goldDir > 0 && spxDir < 0) {
+    regime = '🟢 Risk-Off 안전자산 수요';
+    bannerCls = 'bullish';
+    bannerText = `현재 금↑ + 주식↓ → 안전자산 선호 강화, 방어적 포지션 우위`;
+  } else if (goldDir > 0 && dxyDir > 0) {
+    regime = '🟡 이례적 동반 강세';
+    bannerCls = 'caution';
+    bannerText = `현재 금↑ + 달러↑ → 중앙은행 매수 or 지정학 요인 가능성, 일반적이지 않은 환경`;
+  } else if (goldDir < 0 && rateDir > 0) {
+    regime = '🔴 실질금리 압박';
+    bannerCls = 'bearish';
+    bannerText = `현재 금↓ + 실질금리↑ (${real}%) → 금에 역풍. 달러·금리 강세 환경`;
+  } else if (goldDir < 0 && spxDir < 0) {
+    regime = '🔴 유동성 위기 가능성';
+    bannerCls = 'bearish';
+    bannerText = `현재 금↓ + 주식↓ → 레버리지 청산 or 달러 강세 주도 매도 환경`;
+  } else {
+    regime = '⚪ 방향성 불명확';
+    bannerCls = 'neutral';
+    bannerText = `최근 5일 기준 뚜렷한 방향성 없음. 다른 지표(VIX·HY OAS)와 병행 확인 필요`;
+  }
+
+  if (subtitle) subtitle.textContent = regime;
+
+  // 배너 삽입 (기존 내용 앞에)
+  const banner = `<div class="gold-regime-banner ${bannerCls}">${bannerText}</div>`;
+
+  // 기존 해석 가이드 텍스트는 유지, 배너만 앞에 추가
+  const existing = container.innerHTML;
+  if (!container.querySelector('.gold-regime-banner')) {
+    container.innerHTML = banner + existing;
+  } else {
+    container.querySelector('.gold-regime-banner').className = `gold-regime-banner ${bannerCls}`;
+    container.querySelector('.gold-regime-banner').textContent = bannerText;
+    if (subtitle) subtitle.textContent = regime;
+  }
+}
+
+function renderDFII10Stats(data) {
+  const el = document.getElementById('stats-dfii10');
+  if (!el || !data || !data.ok) return;
+  const chg = data.change;
+  const cls = chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
+  const sign = chg > 0 ? '+' : '';
+  el.innerHTML = `
+    <span class="stat-current">${data.current.toFixed(3)}<span style="font-size:14px;color:#888;">%</span></span>
+    <span class="stat-change ${cls}">${sign}${data.change_pct.toFixed(2)}%</span>
+    <span class="stat-change ${cls}" style="font-size:12px;">${sign}${chg.toFixed(3)}%p</span>
+    <span style="font-size:11px; color: ${data.current < 0 ? '#f09595' : '#c0dd97'}; margin-left:6px;">
+      ${data.current < 0 ? '음의 실질금리 (금 우호)' : '양의 실질금리'}
+    </span>
+  `;
+}
+
+function renderBEIStats(data) {
+  const el = document.getElementById('stats-bei');
+  if (!el || !data || !data.ok) return;
+  const chg = data.change;
+  const cls = chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
+  const sign = chg > 0 ? '+' : '';
+  let level = '';
+  if (data.current > 2.5) level = '<span style="color:#f09595; font-size:11px;">인플레 우려↑</span>';
+  else if (data.current > 2.0) level = '<span style="color:#f0b070; font-size:11px;">Fed 목표 상단</span>';
+  else level = '<span style="color:#c0dd97; font-size:11px;">안정권</span>';
+  el.innerHTML = `
+    <span class="stat-current">${data.current.toFixed(3)}<span style="font-size:14px;color:#888;">%</span></span>
+    <span class="stat-change ${cls}">${sign}${data.change_pct.toFixed(2)}%</span>
+    ${level}
+  `;
+}
+
+// ── 원자재 탭 렌더링 ──
+function retCls(v) {
+  if (v === null || v === undefined) return 'flat';
+  return v > 0 ? 'up' : v < 0 ? 'down' : 'flat';
+}
+function retFmt(v) {
+  if (v === null || v === undefined) return '—';
+  return (v > 0 ? '+' : '') + v.toFixed(2) + '%';
+}
+
+function renderReturnsTable(containerId, returns) {
+  const el = document.getElementById(containerId);
+  if (!el || !returns) return;
+  const periods = [
+    { key: '1d', label: '1D' },
+    { key: '1m', label: '1M' },
+    { key: '3m', label: '3M' },
+    { key: '6m', label: '6M' },
+    { key: '12m', label: '12M' },
+  ];
+  el.innerHTML = periods.map(p => `
+    <div class="ret-cell">
+      <div class="ret-period">${p.label}</div>
+      <div class="ret-val ${retCls(returns[p.key])}">${retFmt(returns[p.key])}</div>
+    </div>`).join('');
+}
+
+function renderCommodityStats(statsId, data) {
+  const el = document.getElementById(statsId);
+  if (!el || !data || !data.ok) return;
+  const change = data.change;
+  const cls = change > 0 ? 'up' : change < 0 ? 'down' : 'flat';
+  const sign = change > 0 ? '+' : '';
+  const unit = data.unit || '';
+  el.innerHTML = `
+    <span class="stat-current">${data.current.toLocaleString('en-US', {maximumFractionDigits: 2})}
+      <span style="font-size:14px; color:#888;"> ${unit}</span>
+    </span>
+    <span class="stat-change ${cls}">${sign}${data.change_pct.toFixed(2)}%</span>
+    <span class="stat-change ${cls}" style="font-size:12px;">${sign}${change.toFixed(2)}</span>
+    ${data.ma200 ? `<span class="ma200-badge ${data.ma200.diff_pct >= 0 ? 'above' : 'below'}">
+      MA200 ${data.ma200.diff_pct >= 0 ? '▲' : '▼'} ${Math.abs(data.ma200.diff_pct).toFixed(1)}%
+    </span>` : ''}
+  `;
+}
+
+function drawCommodityChart(key, data, color, defaultYears) {
+  const ctx = document.getElementById('chart-' + key);
+  if (!ctx || !data || !data.ok) return;
+  if (charts[key]) charts[key].destroy();
+
+  let history = data.history;
+  if (defaultYears) {
+    const cutoff = new Date();
+    cutoff.setFullYear(cutoff.getFullYear() - defaultYears);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    history = history.filter(d => d.date >= cutoffStr);
+  }
+
+  const labels = history.map(d => d.date);
+  const values = history.map(d => d.close);
+  const isUp   = values[values.length - 1] >= values[0];
+  const lc = color || (isUp ? '#5dcaa5' : '#e24b4a');
+  const fc = lc === '#5dcaa5' ? 'rgba(93,202,165,0.1)' : lc === '#e24b4a' ? 'rgba(226,75,74,0.1)' : 'rgba(255,200,50,0.1)';
+
+  charts[key] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{ data: values, borderColor: lc, backgroundColor: fc,
+        borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4,
+        pointHoverBackgroundColor: lc, fill: true, tension: 0.2 }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#14171c', titleColor: '#ccc', bodyColor: '#fff',
+          borderColor: '#2a2e35', borderWidth: 1, padding: 10, displayColors: false,
+          callbacks: { label: ctx => ctx.parsed.y.toLocaleString('en-US', {maximumFractionDigits: 3}) }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#666', font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: maxTicks(),
+          callback: function(val) {
+            const label = this.getLabelForValue(val);
+            if (!label) return '';
+            if (isMobile() && label.length >= 10) return label.slice(2,4) + '.' + label.slice(5,7);
+            if (label.length >= 10) return label.slice(0,7);
+            return label;
+          }
+        }, grid: { display: false } },
+        y: { position: 'right', ticks: { color: '#666', font: { size: 10 },
+          callback: v => v.toLocaleString('en-US', {maximumFractionDigits: 2}) }, grid: { color: '#1f2228' } }
+      }
+    }
+  });
+}
+
+function renderCommodityTab(ind) {
+  // Brent
+  renderCommodityStats('stats-brent', ind.brent);
+  drawCommodityChart('brent', ind.brent, null, 10);
+  renderReturnsTable('returns-brent', ind.brent && ind.brent.returns);
+
+  // Gold
+  renderCommodityStats('stats-gold', ind.gold);
+  drawCommodityChart('gold', ind.gold, '#f0b070', 10);
+  renderReturnsTable('returns-gold', ind.gold && ind.gold.returns);
+
+  // DFII10 (실질금리)
+  renderDFII10Stats(ind.dfii10);
+  drawCommodityChart('dfii10', ind.dfii10, '#a78bfa', 10);
+  renderRateSummary(ind.tnx, ind.dfii10, ind.bei);
+
+  // BEI (기대 인플레이션)
+  renderBEIStats(ind.bei);
+  drawCommodityChart('bei', ind.bei, '#f0b070', 10);
+
+  // 금 해석 가이드 동적 업데이트
+  renderGoldRegime(ind.gold, ind.dfii10, ind.spy, ind.dxy);
+
+  // DXY
+  renderCommodityStats('stats-dxy', ind.dxy);
+  drawCommodityChart('dxy', ind.dxy, null, 5);
+  renderReturnsTable('returns-dxy', ind.dxy && ind.dxy.returns);
+
+  // Gold/Oil Ratio
+  const gor = ind.gold_oil_ratio;
+  const gorStats = document.getElementById('stats-gor');
+  if (gorStats && gor && gor.ok) {
+    const prev = gor.history.length > 1 ? gor.history[gor.history.length - 2].close : gor.current;
+    const chg  = gor.current - prev;
+    const cls  = chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
+    gorStats.innerHTML = `
+      <span class="stat-current">${gor.current.toFixed(2)}</span>
+      <span class="stat-change ${cls}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}</span>
+    `;
+  }
+  drawCommodityChart('gor', gor, '#a78bfa', 10);
+}
+
+
+// ============================================================================
+// US vs Korea 탭 렌더링
+// ============================================================================
+
+function fmtKrus(v, digits=2, unit='') {
+  if (v === null || v === undefined) return '—';
+  return v.toFixed(digits) + unit;
+}
+
+function krusChgCls(v) {
+  if (!v && v !== 0) return 'flat';
+  return v > 0 ? 'up' : v < 0 ? 'down' : 'flat';
+}
+
+// KPI 카드 6개 생성
+function renderKrusKPI(krus) {
+  const grid = document.getElementById('krus-kpi-grid');
+  if (!grid) return;
+
+  const cards = [
+    {
+      title: '🌡️ 인플레이션 (CPI YoY)',
+      us: krus.us_cpi, kr: krus.kr_cpi,
+      digits: 2, unit: '%',
+    },
+    {
+      title: '👷 고용률 / 실업률',
+      us: krus.us_unemp, kr: krus.kr_employ,
+      digits: 2, unit: '%',
+      invertWin: false, // 고용률은 높을수록 좋음
+    },
+    {
+      title: '🏦 10Y 국채금리',
+      us: krus.us_10y, kr: krus.kr_10y,
+      digits: 3, unit: '%',
+    },
+    {
+      title: '🎯 기준금리',
+      us: krus.us_rate, kr: krus.kr_rate,
+      digits: 2, unit: '%',
+    },
+    {
+      title: '💱 KRW/USD 환율',
+      single: krus.krw_usd,
+      digits: 1, unit: '원',
+    },
+    {
+      title: '📐 한미 10Y 금리차',
+      single: krus.spread_10y,
+      digits: 3, unit: '%p',
+      note: '양수=미국高',
+    },
+  ];
+
+  grid.innerHTML = cards.map(c => {
+    if (c.single) {
+      const d = c.single;
+      const val = d && d.ok ? fmtKrus(d.current, c.digits, c.unit) : '—';
+      const chg = d && d.ok ? d.change : null;
+      const cls = krusChgCls(chg);
+      return `
+        <div class="krus-kpi-card">
+          <div class="krus-kpi-title">${c.title}</div>
+          <div style="margin-top:8px; font-size:20px; font-weight:500; color:#e8e8e8; font-variant-numeric:tabular-nums;">${val}</div>
+          ${chg !== null ? `<div class="krus-kpi-diff" style="color:${cls==='up'?'#c0dd97':cls==='down'?'#f09595':'#888'}">
+            ${chg>=0?'+':''}${fmtKrus(chg, c.digits, c.unit)} ${c.note||''}
+          </div>` : ''}
+        </div>`;
+    }
+    const us = c.us, kr = c.kr;
+    const usVal = us && us.ok ? us.current : null;
+    const krVal = kr && kr.ok ? kr.current : null;
+    const diff  = (usVal !== null && krVal !== null) ? round2(usVal - krVal) : null;
+    const usWin = c.invertWin
+      ? (usVal !== null && krVal !== null && usVal < krVal)
+      : (usVal !== null && krVal !== null && usVal > krVal);
+
+    return `
+      <div class="krus-kpi-card">
+        <div class="krus-kpi-title">${c.title}</div>
+        <div class="krus-kpi-row">
+          <div class="krus-kpi-side">
+            <div class="krus-kpi-flag">🇺🇸 미국</div>
+            <div class="krus-kpi-val us-val">${usVal !== null ? fmtKrus(usVal, c.digits, c.unit) : '—'}</div>
+          </div>
+          <div class="krus-kpi-divider">|</div>
+          <div class="krus-kpi-side" style="text-align:right;">
+            <div class="krus-kpi-flag">🇰🇷 한국</div>
+            <div class="krus-kpi-val kr-val">${krVal !== null ? fmtKrus(krVal, c.digits, c.unit) : '—'}</div>
+          </div>
+        </div>
+        ${diff !== null ? `<div class="krus-kpi-diff">차이: ${diff >= 0 ? '+' : ''}${fmtKrus(diff, c.digits, c.unit)} (US−KR)</div>` : ''}
+      </div>`;
+  }).join('');
+}
+
+function round2(v) { return Math.round(v * 1000) / 1000; }
+
+// 비교 차트 (두 선)
+function drawCompareChart(canvasId, data1, data2, label1, label2, color1, color2, unit, defaultYears) {
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+  if (charts[canvasId]) charts[canvasId].destroy();
+
+  const map1 = {};
+  const map2 = {};
+  (data1 && data1.ok ? data1.history : []).forEach(p => map1[p.date] = p.close);
+  (data2 && data2.ok ? data2.history : []).forEach(p => map2[p.date] = p.close);
+  let allDates = [...new Set([...Object.keys(map1), ...Object.keys(map2)])].sort();
+
+  // 기본 표시 기간 적용 (defaultYears 지정 시 최근 N년만 표시)
+  if (defaultYears) {
+    const cutoff = new Date();
+    cutoff.setFullYear(cutoff.getFullYear() - defaultYears);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    allDates = allDates.filter(d => d >= cutoffStr);
+  }
+
+  charts[canvasId] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: allDates,
+      datasets: [
+        {
+          label: label1,
+          data: allDates.map(d => map1[d] !== undefined ? map1[d] : null),
+          borderColor: color1, backgroundColor: color1 + '18',
+          borderWidth: 1.8, pointRadius: 0, pointHoverRadius: 4,
+          fill: false, tension: 0.2, spanGaps: true,
+        },
+        {
+          label: label2,
+          data: allDates.map(d => map2[d] !== undefined ? map2[d] : null),
+          borderColor: color2, backgroundColor: color2 + '18',
+          borderWidth: 1.8, pointRadius: 0, pointHoverRadius: 4,
+          fill: false, tension: 0.2, spanGaps: true,
+        },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          display: true,
+          labels: { color: '#888', font: { size: 11 }, boxWidth: 12, padding: 10 }
+        },
+        tooltip: {
+          backgroundColor: '#14171c', titleColor: '#ccc', bodyColor: '#fff',
+          borderColor: '#2a2e35', borderWidth: 1, padding: 10,
+          callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y !== null ? ctx.parsed.y.toFixed(3) + (unit||'') : '—'}` }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#666', font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: maxTicks(),
+          callback: function(val) {
+            const label = this.getLabelForValue(val);
+            if (!label) return '';
+            if (isMobile() && label.length >= 10) return label.slice(2,4) + '.' + label.slice(5,7);
+            if (label.length >= 10) return label.slice(0,7);
+            return label;
+          }
+        }, grid: { display: false } },
+        y: { position: 'right', ticks: { color: '#666', font: { size: 10 }, callback: v => v.toFixed(2) + (unit||'') }, grid: { color: '#1f2228' } }
+      }
+    }
+  });
+}
+
+// KRW 단일 차트
+function renderKrwStats(data) {
+  const el = document.getElementById('stats-krw');
+  if (!el || !data || !data.ok) return;
+  const chg = data.change;
+  const cls = chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
+  const sign = chg > 0 ? '+' : '';
+  el.innerHTML = `
+    <span class="stat-current">${data.current.toFixed(1)}<span style="font-size:14px;color:#888;"> KRW/USD</span></span>
+    <span class="stat-change ${cls}">${sign}${chg.toFixed(1)}</span>
+    <span style="font-size:11px;color:${chg>0?'#f09595':'#c0dd97'};margin-left:6px;">
+      ${chg > 0 ? '원화 약세' : '원화 강세'}
+    </span>`;
+}
+
+function renderSpreadStats(krus) {
+  const el = document.getElementById('stats-spread');
+  if (!el) return;
+  const s10 = krus.spread_10y;
+  const sr  = krus.spread_rate;
+  const fmt = d => d && d.ok ? `${d.current >= 0 ? '+' : ''}${d.current.toFixed(3)}%p` : '—';
+  el.innerHTML = `
+    <span class="stat-current" style="font-size:20px;">${fmt(s10)}</span>
+    <span style="font-size:12px;color:#888;margin-left:8px;">10Y 금리차</span>
+    <span class="stat-change flat" style="margin-left:12px;">정책금리차: ${fmt(sr)}</span>`;
+}
+
+// 거시 국면 해석 패널
+function renderKrusInterp(krus) {
+  const grid = document.getElementById('krus-interp-grid');
+  if (!grid) return;
+
+  const interps = [];
+
+  // 1. 물가 우위
+  const usCpi = krus.us_cpi && krus.us_cpi.ok ? krus.us_cpi.current : null;
+  const krCpi = krus.kr_cpi && krus.kr_cpi.ok ? krus.kr_cpi.current : null;
+  if (usCpi !== null && krCpi !== null) {
+    const diff = usCpi - krCpi;
+    const winner = diff > 0.3 ? 'us-ahead' : diff < -0.3 ? 'kr-ahead' : 'neutral';
+    const verdict = diff > 0.3
+      ? `🇺🇸 미국 인플레 압력 우위 (+${diff.toFixed(2)}%p)`
+      : diff < -0.3
+      ? `🇰🇷 한국 인플레 압력 우위 (${diff.toFixed(2)}%p)`
+      : '⚪ 양국 인플레 압력 유사';
+    const detail = diff > 0.3
+      ? `미국 CPI ${usCpi.toFixed(2)}% vs 한국 ${krCpi.toFixed(2)}%. 미국이 더 끈질긴 인플레 환경. Fed 긴축 장기화 리스크.`
+      : diff < -0.3
+      ? `한국 CPI ${krCpi.toFixed(2)}% vs 미국 ${usCpi.toFixed(2)}%. 한국 물가 압력 상대적 우위. 한은 긴축 필요성 ↑.`
+      : `미국 ${usCpi.toFixed(2)}% / 한국 ${krCpi.toFixed(2)}%. 유사한 인플레 수준. 양국 통화정책 방향이 핵심 변수.`;
+    interps.push({ title: '🌡️ 물가 압력', verdict, detail, cls: winner });
+  }
+
+  // 2. 금융여건 (금리차 기반)
+  const sp10 = krus.spread_10y;
+  const spR  = krus.spread_rate;
+  if (sp10 && sp10.ok) {
+    const v = sp10.current;
+    const winner = v > 0.5 ? 'us-ahead' : v < -0.5 ? 'kr-ahead' : 'neutral';
+    const verdict = v > 0.5
+      ? `🇺🇸 미국 금융여건 더 긴축 (+${v.toFixed(2)}%p)`
+      : v < -0.5
+      ? `🇰🇷 한국 금융여건 더 긴축 (${v.toFixed(2)}%p)`
+      : '⚪ 한미 금리 수준 유사';
+    const detail = `한미 10Y 금리차 ${v >= 0 ? '+' : ''}${v.toFixed(3)}%p` +
+      (spR && spR.ok ? ` / 정책금리차 ${spR.current >= 0 ? '+' : ''}${spR.current.toFixed(2)}%p` : '') +
+      `. ${v > 0 ? '달러 강세·원화 약세 압력 구조.' : '달러 약세·원화 지지 여건.'}`;
+    interps.push({ title: '🏦 금융여건 긴축도', verdict, detail, cls: winner });
+  }
+
+  // 3. 고용시장
+  const usUnemp  = krus.us_unemp  && krus.us_unemp.ok  ? krus.us_unemp.current  : null;
+  const krEmploy = krus.kr_employ && krus.kr_employ.ok ? krus.kr_employ.current : null;
+  if (usUnemp !== null && krEmploy !== null) {
+    // 미국: 실업률(낮을수록 좋음) / 한국: 고용률(높을수록 좋음) → 역방향
+    const usStrong = usUnemp < 4.5;   // 미국 실업률 4.5% 미만 = 견조
+    const krStrong = krEmploy > 62.0; // 한국 고용률 62% 초과 = 견조
+    const winner = (usStrong && !krStrong) ? 'us-ahead' : (!usStrong && krStrong) ? 'kr-ahead' : 'neutral';
+    const verdict = winner === 'us-ahead'
+      ? `🇺🇸 미국 고용시장 상대적 견조`
+      : winner === 'kr-ahead'
+      ? `🇰🇷 한국 고용시장 상대적 견조`
+      : '⚪ 한미 고용시장 유사 수준';
+    const detail = `미국 실업률 ${usUnemp.toFixed(2)}% / 한국 고용률 ${krEmploy.toFixed(2)}% (계절조정). ` +
+      `※ 지표 방향이 달라 직접 비교 불가, 각국 기준으로 해석 필요.`;
+    interps.push({ title: '👷 고용시장', verdict, detail, cls: winner });
+  }
+
+  // 4. 환율 취약도
+  const krw = krus.krw_usd;
+  if (krw && krw.ok) {
+    const chg3m = krw.val_3m_ago ? round2(((krw.current - krw.val_3m_ago) / krw.val_3m_ago) * 100) : null;
+    const winner = chg3m !== null && chg3m > 2 ? 'kr-ahead' : chg3m !== null && chg3m < -2 ? 'us-ahead' : 'neutral';
+    const verdict = chg3m !== null
+      ? (chg3m > 2 ? `🇰🇷 원화 약세 지속 (3M: +${chg3m.toFixed(2)}%)` : chg3m < -2 ? `🇰🇷 원화 강세 (3M: ${chg3m.toFixed(2)}%)` : '⚪ 환율 안정 구간')
+      : '⚪ 환율 방향 분석 중';
+    const detail = `현재 KRW/USD ${krw.current.toFixed(1)}원${chg3m !== null ? `. 3개월 변화 ${chg3m >= 0 ? '+' : ''}${chg3m.toFixed(2)}%.` : '.'} ${
+      chg3m > 2 ? '한국 수입물가 상승 압력, 경상수지 영향 주시.' : chg3m < -2 ? '원화 강세로 수출 경쟁력 일부 약화 가능.' : '환율 변동성 제한적.'
+    }`;
+    interps.push({ title: '💱 환율 취약도', verdict, detail, cls: winner });
+  }
+
+  grid.innerHTML = interps.map(i => `
+    <div class="krus-interp-card ${i.cls}">
+      <div class="krus-interp-title">${i.title}</div>
+      <div class="krus-interp-verdict">${i.verdict}</div>
+      <div class="krus-interp-detail">${i.detail}</div>
+    </div>`).join('');
+}
+
+// 메인 렌더
+function renderKrusTab(krus) {
+  if (!krus) return;
+
+  renderKrusKPI(krus);
+  renderKrusInterp(krus);
+
+  // 비교 차트 4개
+  drawCompareChart('chart-cpi-compare',
+    krus.us_cpi, krus.kr_cpi, '🇺🇸 미국 CPI YoY', '🇰🇷 한국 CPI YoY',
+    '#5dcaa5', '#f0b070', '%', 10);
+
+  drawCompareChart('chart-unemp-compare',
+    krus.us_unemp, krus.kr_employ, '🇺🇸 미국 실업률', '🇰🇷 한국 고용률(계절조정)',
+    '#5dcaa5', '#f0b070', '%', 10);
+
+  drawCompareChart('chart-10y-compare',
+    krus.us_10y, krus.kr_10y, '🇺🇸 미국 10Y', '🇰🇷 한국 10Y',
+    '#5dcaa5', '#f0b070', '%', 10);
+
+  drawCompareChart('chart-ip-compare',
+    krus.us_ip, krus.kr_export, '🇺🇸 미국 산업생산 YoY', '🇰🇷 한국 상품수출 YoY (산업생산 대체)',
+    '#5dcaa5', '#f0b070', '%', 10);
+
+  // KRW/USD 단일
+  renderKrwStats(krus.krw_usd);
+  drawCommodityChart('chart-krw', krus.krw_usd, '#a78bfa', 5);
+
+  // 금리차 비교
+  renderSpreadStats(krus);
+  drawCompareChart('chart-spread-compare',
+    krus.spread_10y, krus.spread_rate, '10Y 금리차', '정책금리차',
+    '#5dcaa5', '#f0b070', '%p', 5);
+}
+
+
+
+// ── 모바일 감지 헬퍼 ──
+function isMobile() {
+  return window.innerWidth <= 768;
+}
+function maxTicks() {
+  if (window.innerWidth <= 480) return 3;
+  if (window.innerWidth <= 768) return 4;
+  return 6;
+}
+
+// ── 연동 크로스헤어 (가격차트 ↔ RSI차트 동기화) ──
+// 각 key별로 [priceChart, rsiChart] 쌍을 관리
+const linkedCharts = {};  // { 'spy': {price: chartObj, rsi: chartObj}, ... }
+
+function drawCrosshair(chart, x) {
+  const { ctx, chartArea } = chart;
+  if (!chartArea) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.setLineDash([4, 3]);
+  ctx.strokeStyle = 'rgba(200,200,200,0.5)';
+  ctx.lineWidth = 1;
+  ctx.moveTo(x, chartArea.top);
+  ctx.lineTo(x, chartArea.bottom);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function getChartIndexByX(chart, offsetX) {
+  // x픽셀 위치에서 가장 가까운 데이터 인덱스 반환
+  const { left, right } = chart.chartArea;
+  const pct = Math.max(0, Math.min(1, (offsetX - left) / (right - left)));
+  return Math.round(pct * (chart.data.labels.length - 1));
+}
+
+function getPixelByDate(chart, dateStr) {
+  // 날짜 문자열로 해당 인덱스의 x픽셀 반환 (가장 가까운 날짜 매칭)
+  const labels = chart.data.labels;
+  // 정확히 일치하는 인덱스 먼저 찾기
+  let idx = labels.indexOf(dateStr);
+  if (idx === -1) {
+    // 없으면 가장 가까운 날짜 찾기
+    let minDiff = Infinity;
+    const target = new Date(dateStr).getTime();
+    labels.forEach((l, i) => {
+      const diff = Math.abs(new Date(l).getTime() - target);
+      if (diff < minDiff) { minDiff = diff; idx = i; }
+    });
+  }
+  if (idx === -1) return null;
+  return { idx, x: chart.scales.x.getPixelForValue(idx) };
+}
+
+function syncCrosshair(sourceChart, rsiChart, event) {
+  if (!rsiChart || !sourceChart) return;
+
+  // 소스 차트에서 커서 위치의 날짜 찾기
+  const srcIdx = getChartIndexByX(sourceChart, event.offsetX);
+  const dateStr = sourceChart.data.labels[srcIdx];
+
+  // RSI 차트에서 같은 날짜의 픽셀 위치 찾기
+  const rsiMatch = getPixelByDate(rsiChart, dateStr);
+
+  sourceChart.draw();
+  rsiChart.draw();
+  drawCrosshair(sourceChart, event.offsetX);
+
+  if (rsiMatch) {
+    drawCrosshair(rsiChart, rsiMatch.x);
+    rsiChart.tooltip.setActiveElements(
+      [{ datasetIndex: 0, index: rsiMatch.idx }],
+      { x: rsiMatch.x, y: 0 }
+    );
+    rsiChart.update('none');
+  }
+}
+
+function getOffsetX(e, canvas) {
+  // 마우스 또는 터치 이벤트 모두 처리
+  if (e.touches) {
+    const rect = canvas.getBoundingClientRect();
+    return e.touches[0].clientX - rect.left;
+  }
+  return e.offsetX;
+}
+
+function attachCrosshairSync(key) {
+  const pair = linkedCharts[key];
+  if (!pair || !pair.price || !pair.rsi) return;
+
+  const priceCanvas = document.getElementById('chart-' + key);
+  const rsiCanvas   = document.getElementById('rsi-chart-' + key);
+  if (!priceCanvas || !rsiCanvas) return;
+
+  function onPriceMove(e) {
+    if (e.cancelable) e.preventDefault();
+    const offsetX = getOffsetX(e, priceCanvas);
+    syncCrosshair(pair.price, pair.rsi, { offsetX });
+  }
+  function onPriceLeave() {
+    pair.price.draw(); pair.rsi.draw();
+    pair.rsi.tooltip.setActiveElements([], {}); pair.rsi.update('none');
+  }
+  function onRsiMove(e) {
+    if (e.cancelable) e.preventDefault();
+    const offsetX = getOffsetX(e, rsiCanvas);
+
+    // RSI 차트에서 커서 위치의 날짜 찾기
+    const rsiIdx = getChartIndexByX(pair.rsi, offsetX);
+    const dateStr = pair.rsi.data.labels[rsiIdx];
+
+    // 가격 차트에서 같은 날짜의 픽셀 위치 찾기
+    const priceMatch = getPixelByDate(pair.price, dateStr);
+
+    pair.price.draw(); pair.rsi.draw();
+    drawCrosshair(pair.rsi, offsetX);
+
+    if (priceMatch) {
+      drawCrosshair(pair.price, priceMatch.x);
+      pair.price.tooltip.setActiveElements(
+        [{ datasetIndex: 0, index: priceMatch.idx }],
+        { x: priceMatch.x, y: 0 }
+      );
+      pair.price.update('none');
+    }
+  }
+  function onRsiLeave() {
+    pair.price.draw(); pair.rsi.draw();
+    pair.price.tooltip.setActiveElements([], {}); pair.price.update('none');
+  }
+
+  // 마우스 이벤트
+  priceCanvas.onmousemove  = onPriceMove;
+  priceCanvas.onmouseleave = onPriceLeave;
+  rsiCanvas.onmousemove    = onRsiMove;
+  rsiCanvas.onmouseleave   = onRsiLeave;
+
+  // 터치 이벤트 (모바일)
+  priceCanvas.addEventListener('touchmove',  onPriceMove,  { passive: false });
+  priceCanvas.addEventListener('touchend',   onPriceLeave, { passive: true  });
+  rsiCanvas.addEventListener('touchmove',    onRsiMove,    { passive: false });
+  rsiCanvas.addEventListener('touchend',     onRsiLeave,   { passive: true  });
+}
+
+// ── RSI 렌더링 ──
+function classifyRSI(val) {
+  if (val >= 70) return { label: '과매수 (70+)', cls: 'overbought' };
+  if (val >= 60) return { label: '강세 (60–70)', cls: 'upper' };
+  if (val >= 40) return { label: '중립 (40–60)', cls: 'neutral' };
+  if (val >= 30) return { label: '약세 (30–40)', cls: 'lower' };
+  return            { label: '과매도 (–30)', cls: 'oversold' };
+}
+
+function renderRSI(key, data, defaultYears) {
+  const canvasId = 'rsi-chart-' + key;
+  const ctx = document.getElementById(canvasId);
+  if (!ctx || !data || !data.rsi) return;
+
+  const rsi     = data.rsi;
+  const current = rsi.current;
+  const cls     = classifyRSI(current);
+
+  // 헤더 업데이트
+  const valEl   = document.getElementById('rsi-val-' + key);
+  const badgeEl = document.getElementById('rsi-badge-' + key);
+  if (valEl)   valEl.textContent   = current.toFixed(1);
+  if (badgeEl) { badgeEl.textContent = cls.label; badgeEl.className = 'rsi-badge ' + cls.cls; }
+
+  // 차트
+  if (charts[canvasId]) charts[canvasId].destroy();
+
+  let history = rsi.history || [];
+  if (defaultYears) {
+    const cutoff = new Date();
+    cutoff.setFullYear(cutoff.getFullYear() - defaultYears);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    history = history.filter(d => d.date >= cutoffStr);
+  }
+
+  const labels = history.map(d => d.date);
+  const values = history.map(d => d.close);
+
+  charts[canvasId] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        borderColor: '#a78bfa',
+        backgroundColor: 'rgba(167,139,250,0.08)',
+        borderWidth: 1.2,
+        pointRadius: 0,
+        pointHoverRadius: 3,
+        fill: true,
+        tension: 0.2,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#14171c', titleColor: '#ccc', bodyColor: '#fff',
+          borderColor: '#2a2e35', borderWidth: 1, padding: 8, displayColors: false,
+          callbacks: { label: ctx => 'RSI(21): ' + ctx.parsed.y.toFixed(1) }
+        },
+        annotation: undefined,
+      },
+      scales: {
+        x: { display: false },
+        y: {
+          position: 'right',
+          min: 0, max: 100,
+          ticks: { color: '#666', font: { size: 9 }, stepSize: 25 },
+          grid: { color: '#1f2228' },
+        }
+      }
+    }
+  });
+
+  // 과매수/과매도 기준선 (Plugin 없이 afterDraw로 직접 그리기)
+  const chart = charts[canvasId];
+  const originalDraw = chart.draw.bind(chart);
+  chart.draw = function() {
+    originalDraw();
+    const { ctx: c, chartArea, scales } = chart;
+    if (!chartArea) return;
+    const yScale = scales.y;
+    [30, 70].forEach(level => {
+      const y = yScale.getPixelForValue(level);
+      c.save();
+      c.setLineDash([4, 3]);
+      c.strokeStyle = level === 70 ? 'rgba(240,149,149,0.5)' : 'rgba(192,221,151,0.5)';
+      c.lineWidth = 1;
+      c.beginPath();
+      c.moveTo(chartArea.left, y);
+      c.lineTo(chartArea.right, y);
+      c.stroke();
+      c.restore();
+    });
+  };
+  chart.draw();
+
+  // linkedCharts에 RSI 차트 등록 후 크로스헤어 연동
+  if (!linkedCharts[key]) linkedCharts[key] = {};
+  linkedCharts[key].rsi = chart;
+  // 두 차트가 모두 준비됐으면 이벤트 연결
+  if (linkedCharts[key].price) {
+    setTimeout(() => attachCrosshairSync(key), 100);
+  }
+}
+
+// ── 라이트/다크 테마 전환 ──
+function toggleTheme() {
+  const body = document.body;
+  const btn  = document.getElementById('theme-btn');
+  const isLight = body.classList.toggle('light');
+  btn.textContent = isLight ? '🌙 다크' : '☀️ 라이트';
+  localStorage.setItem('theme', isLight ? 'light' : 'dark');
+  // 차트 재렌더 (색상 업데이트)
+  const statusEl = document.getElementById('status');
+  if (statusEl && statusEl.className.includes('ok')) {
+    // 이미 데이터 있으면 차트 색만 갱신
+    Object.keys(charts).forEach(k => { if (charts[k]) charts[k].update(); });
+  }
+}
+// 저장된 테마 복원
+(function() {
+  const saved = localStorage.getItem('theme');
+  if (saved === 'light') {
+    document.body.classList.add('light');
+    const btn = document.getElementById('theme-btn');
+    if (btn) btn.textContent = '🌙 다크';
+  }
+})();
+
+// ── Composite 계산 과정 토글 ──
+function toggleCompositeDetail() {
+  const panel  = document.getElementById('composite-detail-panel');
+  const toggle = document.querySelector('.composite-toggle');
+  if (!panel) return;
+  const isOpen = panel.classList.toggle('open');
+  if (toggle) toggle.textContent = isOpen ? '▾ 계산 과정 닫기' : '▸ 계산 과정 보기';
+}
+
+// ── 탭 전환 ──
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  btn.classList.add('active');
+}
+
+</script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0e1014;
+    color: #e8e8e8;
+    padding: 20px;
+    min-height: 100vh;
+  }
+  .header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 20px; flex-wrap: wrap; gap: 12px;
+  }
+  .header h1 { font-size: 22px; font-weight: 500; }
+  .header .subtitle { font-size: 13px; color: #888; margin-top: 4px; }
+  .clock { font-size: 13px; color: #aaa; text-align: right; }
+  .clock .time { font-size: 18px; color: #fff; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .status {
+    font-size: 11px; color: #888; margin-top: 4px;
+  }
+  .status.ok { color: #97c459; }
+  .status.error { color: #f0997b; }
+
+  .section-label {
+    font-size: 11px; color: #666; text-transform: uppercase;
+    letter-spacing: 0.1em; margin: 16px 0 10px;
+    padding-bottom: 6px; border-bottom: 1px solid #2a2e35;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(480px, 1fr));
+    gap: 16px; margin-bottom: 8px;
+  }
+  .card {
+    background: #1a1d23; border-radius: 12px;
+    border: 1px solid #2a2e35; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .card-header {
+    padding: 14px 18px; border-bottom: 1px solid #2a2e35;
+  }
+  .card-top {
+    display: flex; justify-content: space-between; align-items: flex-start;
+  }
+  .card-title { font-size: 14px; font-weight: 500; }
+  .card-subtitle { font-size: 11px; color: #888; margin-top: 2px; }
+  .card-link {
+    font-size: 12px; color: #4a9eff; text-decoration: none;
+    padding: 4px 8px; border-radius: 6px; border: 1px solid #2a4a7a;
+  }
+  .card-link:hover { background: #1a3050; }
+
+  .card-stats {
+    display: flex; align-items: baseline; gap: 12px; margin-top: 8px;
+  }
+  .stat-current {
+    font-size: 28px; font-weight: 500; color: #fff;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat-change {
+    font-size: 13px; font-weight: 500; font-variant-numeric: tabular-nums;
+    padding: 2px 8px; border-radius: 6px;
+  }
+  .stat-change.up   { color: #c0dd97; background: #173404; }
+  .stat-change.down { color: #f09595; background: #501313; }
+  .stat-change.flat { color: #aaa;    background: #2a2e35; }
+
+  .chart-wrap {
+    height: 240px; padding: 12px 18px 16px;
+    position: relative;
+  }
+
+  /* F&G 카드 */
+  .fg-container {
+    padding: 24px; display: flex; flex-direction: column;
+    align-items: center; gap: 14px; min-height: 340px;
+    justify-content: center;
+  }
+  .fg-label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.08em; }
+  .fg-value { font-size: 80px; font-weight: 500; color: #fff; line-height: 1; font-variant-numeric: tabular-nums; }
+  .fg-status {
+    font-size: 15px; padding: 6px 16px; border-radius: 8px; font-weight: 500;
+  }
+  .fg-status.extreme-fear { background: #501313; color: #f09595; }
+  .fg-status.fear         { background: #4a1b0c; color: #f0997b; }
+  .fg-status.neutral      { background: #444441; color: #d3d1c7; }
+  .fg-status.greed        { background: #3a2e15; color: #f0b070; }
+  .fg-status.extreme-greed{ background: #173404; color: #c0dd97; }
+  .fg-gauge { width: 100%; max-width: 320px; }
+  .fg-bar {
+    position: relative; height: 8px;
+    background: linear-gradient(90deg, #501313 0%, #993c1d 25%, #5f5e5a 50%, #639922 75%, #173404 100%);
+    border-radius: 4px;
+  }
+  .fg-marker {
+    position: absolute; top: -4px; width: 16px; height: 16px;
+    background: #fff; border: 2px solid #000; border-radius: 50%;
+    transform: translateX(-50%);
+  }
+  .fg-scale {
+    display: flex; justify-content: space-between;
+    font-size: 10px; color: #666; margin-top: 8px;
+  }
+  .fg-prev {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 10px; width: 100%; max-width: 360px;
+  }
+  .fg-prev-item { background: #14171c; border-radius: 8px; padding: 8px 10px; text-align: center; }
+  .fg-prev-label { font-size: 10px; color: #777; text-transform: uppercase; letter-spacing: 0.05em; }
+  .fg-prev-value { font-size: 16px; font-weight: 500; color: #ccc; margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+  .error-box {
+    padding: 14px 18px; background: #2a1a1a; color: #f0997b;
+    border-radius: 8px; font-size: 12px; margin: 12px 18px;
+    line-height: 1.6;
+  }
+  .loading {
+    padding: 80px 20px; text-align: center; color: #666; font-size: 13px;
+  }
+
+  .composite-card {
+    padding: 16px 20px; border-radius: 12px;
+    margin-bottom: 16px; border: 1px solid #2a2e35;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .composite-card.risk-on   { background: #173404; border-color: #639922; }
+  .composite-card.neutral   { background: #3a2e15; border-color: #ba7517; }
+  .composite-card.risk-off  { background: #501313; border-color: #a32d2d; }
+  .composite-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; opacity: 0.8; }
+  .composite-verdict { font-size: 18px; font-weight: 500; margin-top: 2px; }
+  .composite-score {
+    font-size: 32px; font-weight: 500; font-variant-numeric: tabular-nums;
+    margin-left: auto;
+  }
+  .composite-detail { font-size: 12px; opacity: 0.85; margin-top: 4px; }
+
+  .footer {
+    margin-top: 20px; padding: 14px 18px;
+    background: #14171c; border-radius: 10px;
+    font-size: 12px; color: #888; line-height: 1.7;
+  }
+  .footer b { color: #ccc; font-weight: 500; }
+  .guide-legend {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 8px 20px; margin-top: 8px;
+  }
+  @media (max-width: 768px) {
+    .grid { grid-template-columns: 1fr; }
+    .fg-value { font-size: 64px; }
+  }
+
+  /* ── 탭 ── */
+  .tab-bar {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 20px;
+    background: #14171c;
+    padding: 6px;
+    border-radius: 10px;
+    width: fit-content;
+  }
+  .tab-btn {
+    padding: 8px 20px;
+    border-radius: 7px;
+    border: none;
+    background: transparent;
+    color: #888;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .tab-btn.active {
+    background: #2a2e35;
+    color: #e8e8e8;
+  }
+  .tab-btn:hover:not(.active) { color: #ccc; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* ── 원자재 placeholder ── */
+  .coming-soon {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 300px;
+    color: #555;
+    font-size: 14px;
+    gap: 12px;
+    border: 1px dashed #2a2e35;
+    border-radius: 12px;
+    margin-top: 12px;
+  }
+  .coming-soon .icon { font-size: 40px; }
+
+  /* ── 수익률 테이블 ── */
+  .returns-table {
+    display: flex;
+    gap: 0;
+    border-top: 1px solid #2a2e35;
+  }
+  .ret-cell {
+    flex: 1;
+    padding: 8px 4px;
+    text-align: center;
+    border-right: 1px solid #2a2e35;
+  }
+  .ret-cell:last-child { border-right: none; }
+  .ret-period { font-size: 10px; color: #666; }
+  .ret-val { font-size: 13px; font-weight: 500; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .ret-val.up   { color: #c0dd97; }
+  .ret-val.down { color: #f09595; }
+  .ret-val.flat { color: #888; }
+
+  /* ── 해석 박스 ── */
+  .interp-box {
+    padding: 10px 14px;
+    font-size: 11px;
+    color: #777;
+    line-height: 1.6;
+    border-top: 1px solid #2a2e35;
+  }
+  .interp-box b { color: #aaa; }
+  .ma200-badge {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 5px;
+    margin-left: 8px;
+    font-weight: 500;
+  }
+  .ma200-badge.above { background: #173404; color: #c0dd97; }
+  .ma200-badge.below { background: #501313; color: #f09595; }
+
+
+  /* ── 실질금리/명목/BEI 요약 바 ── */
+  .rate-summary {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    border-top: 1px solid #2a2e35;
+  }
+  .rate-cell {
+    padding: 10px 12px;
+    border-right: 1px solid #2a2e35;
+    text-align: center;
+  }
+  .rate-cell:last-child { border-right: none; }
+  .rate-cell-label { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.05em; }
+  .rate-cell-val   { font-size: 15px; font-weight: 500; margin-top: 3px; font-variant-numeric: tabular-nums; }
+  .rate-cell-sub   { font-size: 10px; color: #666; margin-top: 2px; }
+
+  /* ── 현재 국면 강조 배너 ── */
+  .gold-regime-banner {
+    margin: 12px 18px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.5;
+  }
+  .gold-regime-banner.bullish  { background: #173404; color: #c0dd97; border-left: 3px solid #639922; }
+  .gold-regime-banner.caution  { background: #3a2e15; color: #f0b070; border-left: 3px solid #ba7517; }
+  .gold-regime-banner.bearish  { background: #501313; color: #f09595; border-left: 3px solid #a32d2d; }
+  .gold-regime-banner.neutral  { background: #2a2e35; color: #ccc;    border-left: 3px solid #555; }
+
+
+  /* ── US vs Korea 탭 ── */
+  .krus-kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .krus-kpi-card {
+    background: #1a1d23;
+    border: 1px solid #2a2e35;
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+  .krus-kpi-title { font-size: 10px; color: #666; text-transform: uppercase; letter-spacing: 0.06em; }
+  .krus-kpi-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-top: 6px;
+    gap: 4px;
+  }
+  .krus-kpi-side { flex: 1; }
+  .krus-kpi-flag { font-size: 10px; color: #666; }
+  .krus-kpi-val  { font-size: 16px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .krus-kpi-val.us-val { color: #5dcaa5; }
+  .krus-kpi-val.kr-val { color: #f0b070; }
+  .krus-kpi-divider { font-size: 11px; color: #3a3e45; padding: 0 4px; }
+  .krus-kpi-diff {
+    font-size: 11px; margin-top: 6px; padding-top: 6px;
+    border-top: 1px solid #2a2e35; color: #888;
+  }
+
+  /* ── 해석 패널 ── */
+  .krus-interp-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 12px;
+    margin-bottom: 8px;
+  }
+  .krus-interp-card {
+    border-radius: 10px;
+    padding: 14px 16px;
+    font-size: 13px;
+    line-height: 1.7;
+  }
+  .krus-interp-card.us-ahead  { background: #0e2236; border-left: 3px solid #5dcaa5; }
+  .krus-interp-card.kr-ahead  { background: #2e1f0e; border-left: 3px solid #f0b070; }
+  .krus-interp-card.neutral   { background: #1e1e24; border-left: 3px solid #555; }
+  .krus-interp-title { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; color: #888; }
+  .krus-interp-verdict { font-size: 14px; font-weight: 500; margin-bottom: 4px; }
+  .krus-interp-detail  { font-size: 12px; color: #999; }
+
+
+  /* ── 테마 변수 ── */
+  :root {
+    --bg-primary:   #0e1014;
+    --bg-secondary: #1a1d23;
+    --bg-tertiary:  #14171c;
+    --bg-input:     #2a2e35;
+    --text-primary: #e8e8e8;
+    --text-secondary: #888;
+    --text-tertiary: #666;
+    --border-color: #2a2e35;
+    --chart-grid:   #1f2228;
+  }
+  body.light {
+    --bg-primary:   #f4f5f7;
+    --bg-secondary: #ffffff;
+    --bg-tertiary:  #ebedf0;
+    --bg-input:     #dde0e5;
+    --text-primary: #1a1d23;
+    --text-secondary: #555;
+    --text-tertiary: #888;
+    --border-color: #d0d3d8;
+    --chart-grid:   #e8eaed;
+  }
+  body          { background: var(--bg-primary);   color: var(--text-primary); }
+  .card         { background: var(--bg-secondary); border-color: var(--border-color); }
+  .card-header  { border-color: var(--border-color); }
+  .tab-bar      { background: var(--bg-tertiary); }
+  .tab-btn      { color: var(--text-secondary); }
+  .tab-btn.active { background: var(--bg-input); color: var(--text-primary); }
+  .footer, .krus-kpi-card { background: var(--bg-tertiary); border-color: var(--border-color); }
+  .card-title   { color: var(--text-primary); }
+  .card-subtitle, .fg-label, .fg-meta, .rate-cell-label,
+  .fg-scale span, .krus-kpi-flag { color: var(--text-secondary); }
+  .section-label { color: var(--text-tertiary); border-color: var(--border-color); }
+  .fg-prev-item  { background: var(--bg-input); }
+  .krus-kpi-divider { color: var(--border-color); }
+
+  /* ── 테마 전환 버튼 ── */
+  .theme-btn {
+    padding: 6px 14px;
+    border-radius: 7px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+    margin-left: 8px;
+  }
+  .theme-btn:hover { color: var(--text-primary); }
+
+  /* ── Composite 계산 설명 패널 ── */
+  .composite-detail-panel {
+    margin-top: 10px;
+    padding: 12px 16px;
+    background: var(--bg-tertiary);
+    border-radius: 8px;
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--text-secondary);
+    display: none;
+  }
+  .composite-detail-panel.open { display: block; }
+  .composite-detail-panel b { color: var(--text-primary); font-weight: 500; }
+  .score-bar-row {
+    display: flex; align-items: center; gap: 8px; margin: 4px 0;
+  }
+  .score-bar-label { width: 120px; font-size: 11px; flex-shrink: 0; }
+  .score-bar-track {
+    flex: 1; height: 6px; background: var(--border-color);
+    border-radius: 3px; overflow: hidden;
+  }
+  .score-bar-fill  { height: 100%; border-radius: 3px; transition: width 0.3s; }
+  .score-bar-val   { width: 40px; text-align: right; font-size: 11px; font-variant-numeric: tabular-nums; }
+  .composite-toggle {
+    font-size: 11px; color: var(--text-tertiary);
+    cursor: pointer; text-decoration: underline;
+    margin-top: 4px; display: inline-block;
+  }
+  .composite-toggle:hover { color: var(--text-secondary); }
+
+  /* ── 모바일 최적화 ── */
+  @media (max-width: 768px) {
+    body { padding: 10px; }
+    .grid { grid-template-columns: 1fr !important; }
+    .krus-kpi-grid { grid-template-columns: repeat(2, 1fr); }
+    .krus-interp-grid { grid-template-columns: 1fr; }
+    .header { flex-direction: column; align-items: flex-start; gap: 6px; }
+    .header h1 { font-size: 16px; }
+    .clock { display: flex; gap: 8px; align-items: baseline; }
+    .clock .time { font-size: 14px; }
+    .tab-bar { overflow-x: auto; width: 100%; -webkit-overflow-scrolling: touch; }
+    .tab-btn { font-size: 12px; padding: 6px 10px; white-space: nowrap; }
+    .stat-current { font-size: 20px; }
+    .fg-value { font-size: 52px; }
+    .chart-wrap { height: 180px; }
+    .rsi-chart-wrap { height: 80px; }
+    .composite-card { flex-direction: column; gap: 8px; }
+    .composite-score { margin-left: 0; font-size: 22px; }
+    .returns-table { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .ret-cell { min-width: 48px; padding: 6px 3px; }
+    .rate-summary { grid-template-columns: 1fr; }
+    .rate-cell { border-right: none; border-bottom: 1px solid var(--border-color); }
+    .rate-cell:last-child { border-bottom: none; }
+    .krus-kpi-val { font-size: 13px; }
+    .score-bar-label { width: 80px; font-size: 10px; }
+    .card-header { padding: 10px 12px; }
+    .chart-wrap canvas { touch-action: pan-y; }
+    .rsi-panel { padding: 8px 12px 10px; }
+    .section-label { font-size: 10px; margin: 12px 0 8px; }
+    .interp-box { font-size: 10px; padding: 8px 12px; }
+    .guide-legend { grid-template-columns: 1fr; }
+    .footer { padding: 12px; font-size: 11px; }
+    .krus-interp-card { padding: 10px 12px; }
+    .krus-interp-verdict { font-size: 13px; }
+    .krus-interp-detail  { font-size: 11px; }
+  }
+  @media (max-width: 480px) {
+    .krus-kpi-grid { grid-template-columns: 1fr; }
+    .fg-prev { grid-template-columns: repeat(3, 1fr); }
+  }
+
+
+  /* ── RSI 패널 ── */
+  .rsi-panel {
+    border-top: 1px solid var(--border-color);
+    padding: 10px 18px 14px;
+  }
+  .rsi-header {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 8px;
+  }
+  .rsi-title  { font-size: 12px; color: var(--text-secondary); font-weight: 500; }
+  .rsi-value  { font-size: 18px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .rsi-badge  {
+    font-size: 11px; padding: 2px 8px; border-radius: 5px; font-weight: 500;
+  }
+  .rsi-badge.overbought  { background: #501313; color: #f09595; }
+  .rsi-badge.upper       { background: #173404; color: #c0dd97; }
+  .rsi-badge.neutral     { background: #2a2e35; color: #aaa; }
+  .rsi-badge.lower       { background: #3a2e15; color: #f0b070; }
+  .rsi-badge.oversold    { background: #173404; color: #c0dd97; }
+  .rsi-chart-wrap { height: 100px; position: relative; }
+
+
+  /* ── RSI 해석 가이드 — 호버 툴팁 버튼 ── */
+  .rsi-help-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px; height: 18px;
+    border-radius: 50%;
+    background: var(--bg-input);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid var(--border-color);
+    position: relative;
+    flex-shrink: 0;
+    transition: background 0.15s;
+  }
+  .rsi-help-btn:hover { background: #4a9eff; color: #fff; border-color: #4a9eff; }
+
+  .rsi-tooltip {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 8px);
+    right: 0;
+    width: 220px;
+    background: #14171c;
+    border: 1px solid #2a2e35;
+    border-radius: 10px;
+    padding: 10px 12px;
+    font-size: 11px;
+    line-height: 1.6;
+    z-index: 100;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    pointer-events: none;
+  }
+  .rsi-help-btn:hover .rsi-tooltip,
+  .rsi-help-btn:focus .rsi-tooltip { display: block; }
+
+  .rsi-tt-row {
+    display: flex; gap: 7px; align-items: flex-start;
+    padding: 4px 6px; border-radius: 5px; margin-bottom: 2px;
+  }
+  .rsi-tt-range {
+    width: 38px; flex-shrink: 0; font-weight: 600;
+    font-variant-numeric: tabular-nums;
+  }
+  .rsi-tt-row small { font-size: 10px; opacity: 0.75; display: block; }
+  .rsi-tt-row.overbought { background: rgba(80,19,19,0.6);  color: #f09595; }
+  .rsi-tt-row.upper      { background: rgba(23,52,4,0.6);   color: #c0dd97; }
+  .rsi-tt-row.neutral-g  { background: rgba(42,46,53,0.7);  color: #aaa; }
+  .rsi-tt-row.lower      { background: rgba(58,46,21,0.6);  color: #f0b070; }
+  .rsi-tt-row.oversold   { background: rgba(23,52,4,0.6);   color: #c0dd97; }
+
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>📊 Market Sentiment Dashboard</h1>
+    <div class="subtitle">Yahoo Finance (실제 지수) + FRED + CNN · Python 자동 수집</div>
+    <div class="status" id="status">⏳ 데이터 로딩 중...</div>
+  </div>
+  <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+    <button class="theme-btn" id="theme-btn" onclick="toggleTheme()">☀️ 라이트</button>
+    <div class="clock">
+      <div>한국 시간</div>
+      <div class="time" id="clock">--:--:--</div>
+    </div>
+  </div>
+</div>
+
+
+<div class="tab-bar">
+  <button class="tab-btn active" onclick="switchTab('market', this)">📊 시장 지표</button>
+  <button class="tab-btn" onclick="switchTab('commodity', this)">🥇 원자재 &amp; 달러</button>
+  <button class="tab-btn" onclick="switchTab('krus', this)">🇺🇸🇰🇷 US vs Korea</button>
+</div>
+
+<div id="tab-market" class="tab-panel active">
+<div id="composite-container"></div>
+
+<div id="dashboard-content">
+  <div class="loading">📡 data.json 파일을 읽는 중입니다...</div>
+</div>
+
+</div><!-- /tab-market -->
+
+<div id="tab-commodity" class="tab-panel">
+
+  <!-- 블록 1: 성장·물가 -->
+  <div class="section-label">🛢️ 성장 · 물가 압력</div>
+  <div class="grid">
+    <div class="card" id="card-brent">
+      <div class="card-header">
+        <div class="card-top">
+          <div>
+            <div class="card-title">Brent Crude Oil</div>
+            <div class="card-subtitle">성장·물가 압력 지표 · ICE Brent 선물 (BZ=F)</div>
+          </div>
+          <a class="card-link" href="https://finance.yahoo.com/quote/BZ%3DF" target="_blank">Yahoo ↗</a>
+        </div>
+        <div class="card-stats" id="stats-brent">—</div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-brent"></canvas></div>
+      <div class="returns-table" id="returns-brent"></div>
+      <div class="interp-box" id="interp-brent"></div>
+    </div>
+
+    <div class="card" id="card-dxy">
+      <div class="card-header">
+        <div class="card-top">
+          <div>
+            <div class="card-title">US Dollar Index (DXY)</div>
+            <div class="card-subtitle">달러 강세 = 원자재·신흥국 압박 · DX-Y.NYB</div>
+          </div>
+          <a class="card-link" href="https://finance.yahoo.com/quote/DX-Y.NYB" target="_blank">Yahoo ↗</a>
+        </div>
+        <div class="card-stats" id="stats-dxy">—</div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-dxy"></canvas></div>
+      <div class="returns-table" id="returns-dxy"></div>
+    </div>
+  </div>
+
+  <!-- 블록 2: 안전자산·금융여건 -->
+  <div class="section-label">🥇 안전자산 · 금융여건</div>
+  <div class="grid">
+
+    <!-- Gold -->
+    <div class="card" id="card-gold">
+      <div class="card-header">
+        <div class="card-top">
+          <div>
+            <div class="card-title">Gold Spot (COMEX)</div>
+            <div class="card-subtitle">안전자산·실질금리 민감 지표 · GC=F</div>
+          </div>
+          <a class="card-link" href="https://finance.yahoo.com/quote/GC%3DF" target="_blank">Yahoo ↗</a>
+        </div>
+        <div class="card-stats" id="stats-gold">—</div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-gold"></canvas></div>
+      <div class="returns-table" id="returns-gold"></div>
+    </div>
+
+    <!-- 실질금리 (DFII10) -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-top">
+          <div>
+            <div class="card-title">US 10Y 실질금리 (TIPS)</div>
+            <div class="card-subtitle">DFII10 · 금과 역방향 움직임 확인용</div>
+          </div>
+          <a class="card-link" href="https://fred.stlouisfed.org/series/DFII10" target="_blank">FRED ↗</a>
+        </div>
+        <div class="card-stats" id="stats-dfii10">—</div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-dfii10"></canvas></div>
+      <!-- 명목/실질/BEI 3줄 요약 -->
+      <div class="rate-summary" id="rate-summary">—</div>
+    </div>
+
+  </div>
+
+  <!-- 금 해석 가이드 (동적) -->
+  <div class="grid">
+    <div class="card" style="border-color: #2a2e35;">
+      <div class="card-header">
+        <div class="card-top">
+          <div>
+            <div class="card-title">금 해석 가이드</div>
+            <div class="card-subtitle" id="gold-interp-subtitle">현재 실질금리 방향 분석 중...</div>
+          </div>
+        </div>
+      </div>
+      <div id="gold-interp-dynamic" style="padding: 16px 18px; font-size: 13px; line-height: 1.85; color: #bbb;">
+        <div style="margin-bottom: 12px;">
+          <span style="color:#c0dd97; font-weight:500;">🟢 금 강세 전형 환경</span><br>
+          금↑ + 실질금리↓ → 금리 인하 기대 or 인플레 헤지<br>
+          금↑ + 주식↓ → 안전자산 수요 강화 (Risk-Off)
+        </div>
+        <div style="margin-bottom: 12px;">
+          <span style="color:#f0b070; font-weight:500;">🟡 주의 신호</span><br>
+          금↑ + 달러↑ → 이례적 강세, 중앙은행 매수 or 지정학<br>
+          금↓ + 유가↑ → 인플레보다 금리/달러 압박이 더 큰 환경
+        </div>
+        <div>
+          <span style="color:#f09595; font-weight:500;">🔴 리스크 환경</span><br>
+          금↓ + 주식↓ → 유동성 위기 (레버리지 청산)<br>
+          금↓ + VIX↑ → 비전형적, 달러 강세 주도 매도
+        </div>
+      </div>
+    </div>
+
+    <!-- BEI (기대 인플레이션) 차트 -->
+    <div class="card">
+      <div class="card-header">
+        <div class="card-top">
+          <div>
+            <div class="card-title">기대 인플레이션 (BEI)</div>
+            <div class="card-subtitle">= 명목금리 − 실질금리 · Break-Even Inflation</div>
+          </div>
+        </div>
+        <div class="card-stats" id="stats-bei">—</div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-bei"></canvas></div>
+      <div style="padding: 10px 16px; font-size: 11px; color: #666; border-top: 1px solid #2a2e35; line-height: 1.7;">
+        <b style="color:#aaa;">BEI↑</b>: 시장이 인플레 상승 예상 → 금 강세 우호 환경<br>
+        <b style="color:#aaa;">BEI↓</b>: 인플레 기대 하락 → 실질금리 상승 압력, 금에 역풍<br>
+        <span style="font-size:10px; color:#555;">Fed 목표 2% 기준 · 현재값이 높을수록 인플레 우려</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- 블록 3: 종합 파생지표 -->
+  <div class="section-label">📐 종합 해석 · 파생 지표</div>
+  <div class="grid">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-top">
+          <div>
+            <div class="card-title">Gold / Oil Ratio</div>
+            <div class="card-subtitle">금 1온스 ÷ Brent 1배럴 · 국면 판별 지표</div>
+          </div>
+        </div>
+        <div class="card-stats" id="stats-gor">—</div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-gor"></canvas></div>
+      <div style="padding: 12px 18px; font-size: 12px; color: #888; line-height: 1.8; border-top: 1px solid #2a2e35;">
+        <b style="color:#ccc;">비율↑ (금 &gt; 유가 강세)</b>: 안전자산 선호 · 성장 불안 · 경기둔화 가능성<br>
+        <b style="color:#ccc;">비율↓ (유가 &gt; 금 강세)</b>: 성장·인플레 · 공급충격 환경 가능성<br>
+        <span style="color:#666; font-size:11px;">VIX·HY OAS·10Y 금리와 함께 볼 때 매크로 국면 판별력 ↑</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-top">
+          <div>
+            <div class="card-title">유가 해석 가이드</div>
+            <div class="card-subtitle">Brent 기준 국면 판단 (에너지 수입국 관점)</div>
+          </div>
+        </div>
+      </div>
+      <div style="padding: 16px 18px; font-size: 13px; line-height: 1.9; color: #bbb;">
+        <div style="margin-bottom: 12px;">
+          <span style="color:#c0dd97; font-weight:500;">🟢 위험선호 환경</span><br>
+          유가↑ + 주식↑ → 수요 주도 상승 (경기 호조 신호)
+        </div>
+        <div style="margin-bottom: 12px;">
+          <span style="color:#f0b070; font-weight:500;">🟡 인플레 재가열 경고</span><br>
+          유가↑ + 금리↑ → 인플레 압력 재점화 · 정책 부담<br>
+          유가↑ + 달러↑ → 공급충격 or 지정학 요인
+        </div>
+        <div>
+          <span style="color:#f09595; font-weight:500;">🔴 경기둔화 신호</span><br>
+          유가↓ + 주식↓ → 수요 둔화 · 경기침체 가능성<br>
+          유가↓ + 금↑ → 디플레/성장 불안 + 안전자산 선호
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /tab-commodity -->
+
+<div id="tab-krus" class="tab-panel">
+
+  <!-- 상단 KPI 카드 -->
+  <div class="section-label">📊 현재 상태 요약</div>
+  <div class="krus-kpi-grid" id="krus-kpi-grid">
+    <!-- JS로 동적 생성 -->
+  </div>
+
+  <!-- 중단 비교 차트 4개 -->
+  <div class="section-label">📈 추세 비교 차트</div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-top">
+          <div>
+            <div class="card-title">CPI 인플레이션 비교 (YoY %)</div>
+            <div class="card-subtitle">미국 CPIAUCSL vs 한국 CPI · 전년동월비</div>
+          </div>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-cpi-compare"></canvas></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-top">
+          <div>
+            <div class="card-title">실업률 비교 (%)</div>
+            <div class="card-subtitle">미국 UNRATE(실업률) vs 한국 고용률(계절조정) · 역방향 비교</div>
+          </div>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-unemp-compare"></canvas></div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-top">
+          <div>
+            <div class="card-title">10Y 국채금리 비교 (%) + 금리차</div>
+            <div class="card-subtitle">미국 DGS10 vs 한국 IRLTLT01KRM156N · Level</div>
+          </div>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-10y-compare"></canvas></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-top">
+          <div>
+            <div class="card-title">산업생산 비교 (YoY %)</div>
+            <div class="card-subtitle">미국 산업생산(INDPRO) vs 한국 상품수출 YoY · 경기 대리 지표
+              <span style="color:#f0b070; font-size:10px; margin-left:6px;">⚠️ 한국 수출은 1~2개월 지연</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-ip-compare"></canvas></div>
+    </div>
+  </div>
+
+  <!-- 하단 해석 패널 -->
+  <div class="section-label">🧭 거시 국면 해석</div>
+  <div class="krus-interp-grid" id="krus-interp-grid">
+    <!-- JS로 동적 생성 -->
+  </div>
+
+  <!-- KRW/USD + 금리차 -->
+  <div class="section-label">💱 환율 &amp; 금리차</div>
+  <div class="grid">
+    <div class="card">
+      <div class="card-header">
+        <div class="card-top">
+          <div>
+            <div class="card-title">KRW/USD 환율</div>
+            <div class="card-subtitle">원/달러 · Level (원화 약세 = 숫자 상승)</div>
+          </div>
+          <a class="card-link" href="https://finance.naver.com/marketindex/exchangeDetail.naver?marketindexCd=FX_USDKRW" target="_blank">네이버 ↗</a>
+        </div>
+        <div class="card-stats" id="stats-krw">—</div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-krw"></canvas></div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <div class="card-top">
+          <div>
+            <div class="card-title">한미 금리차 (US − KR)</div>
+            <div class="card-subtitle">10Y 금리차 &amp; 정책금리차 · %p</div>
+          </div>
+        </div>
+        <div class="card-stats" id="stats-spread">—</div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart-spread-compare"></canvas></div>
+      <div style="padding: 10px 16px; font-size: 11px; color: #666; border-top: 1px solid #2a2e35; line-height: 1.7;">
+        <b style="color:#aaa;">양수(+)</b>: 미국 금리 &gt; 한국 금리 → 달러 강세 압력, 원화 약세 우려<br>
+        <b style="color:#aaa;">음수(−)</b>: 한국 금리 &gt; 미국 금리 → 자본 유출 압력 완화
+      </div>
+    </div>
+  </div>
+
+</div><!-- /tab-krus -->
+
+
+
+<div class="footer">
+  <div style="margin-bottom: 8px;"><b>📌 지표 해석 가이드</b></div>
+  <div class="guide-legend">
+
+    <div>
+      <b>🎯 F&amp;G (공포·탐욕지수)</b><br>
+      0–24 극공포 → <span style="color:#c0dd97">역발상 매수 기회</span> (역대 저점 Top10 수준)<br>
+      25–44 공포 → 시장 비관, 관망 or 분할 매수 검토<br>
+      45–54 중립 → 방향성 없음, 다른 지표 병행<br>
+      55–74 탐욕 → 추가 매수 신중, 일부 현금화 고려<br>
+      75+ 극탐욕 → <span style="color:#f09595">과열 경고</span>, 적절한 현금화 타이밍
+    </div>
+
+    <div>
+      <b>📊 VIX (변동성 지수)</b><br>
+      &lt;15 → 시장 평온, 과도한 낙관 주의<br>
+      15–20 → 정상 범위<br>
+      20–30 → 경계 구간, 리스크 관리 강화<br>
+      30+ → 패닉 구간 → <span style="color:#c0dd97">급등 후 하락 반전 시 매수 타이밍</span>
+    </div>
+
+    <div>
+      <b>💰 US 10Y 금리</b><br>
+      3.5% 미만 → 침체 우려 구간<br>
+      4.0–4.5% → 골디락스 (증시 선호 구간)<br>
+      4.5% 초과 → <span style="color:#f09595">부담 구간</span> · 추가 매수 중단·현금화 고려<br>
+      급등 시 → 주식·신흥국 자금 이탈 압력
+    </div>
+
+    <div>
+      <b>📉 HY OAS (하이일드 스프레드)</b><br>
+      &lt;3% → 위험선호, 신용 우호<br>
+      3–5% → 정상<br>
+      4% 돌파 급등 → <span style="color:#f09595">신용 경색 경고</span> · 대비 시작<br>
+      4–5% 고점 후 하락 반전 → <span style="color:#c0dd97">분할 매수 찬스</span>
+    </div>
+
+    <div>
+      <b>🥇 Gold / Oil 해석</b><br>
+      금↑ + 실질금리↓ → 전형적 금 강세<br>
+      금↑ + 주식↓ → Risk-Off (안전자산)<br>
+      유가↑ + 금리↑ → 인플레 재가열 경고<br>
+      유가↓ + 주식↓ → 경기둔화 신호<br>
+      Gold/Oil↑ → 안전선호 / Gold/Oil↓ → 성장·인플레
+    </div>
+
+    <div>
+      <b>🇺🇸🇰🇷 한미 비교</b><br>
+      10Y 금리차 양수(+) → 달러 강세·원화 약세 압력<br>
+      CPI 미국 &gt; 한국 → Fed 긴축 장기화 리스크<br>
+      환율 3M +2%↑ → 한국 수입물가 상승·경상수지 영향<br>
+      고용률 62%↑ → 한국 고용시장 견조
+    </div>
+
+  </div>
+  <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #2a2e35;">
+    <b>💡 작동 방식</b>: <code style="color:#aaa;">python fetch_data.py --loop</code> 실행 시 5분마다 data.json 갱신. 이 대시보드는 30초마다 data.json을 다시 읽어 화면 업데이트.
+  </div>
+</div>
+
+<script>
+// ============================================================================
+// 시계
+// ============================================================================
+function updateClock() {
+  const kst = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+  const pad = n => String(n).padStart(2, '0');
+  document.getElementById('clock').textContent =
+    pad(kst.getHours()) + ':' + pad(kst.getMinutes()) + ':' + pad(kst.getSeconds());
+}
+updateClock();
+setInterval(updateClock, 1000);
+
+// ============================================================================
+// 카드 카탈로그 (표시 순서, 메타데이터)
+// ============================================================================
+const CARD_DEFS = [
+  {
+    section: '📈 미국 주요 지수',
+    cards: [
+      { key: 'spy', title: 'S&P 500 (^GSPC)',   subtitle: '미국 대형주 500개 실제 지수',     link: 'https://finance.yahoo.com/quote/%5EGSPC',                         years: 10, rsi: true },
+      { key: 'qqq', title: 'NASDAQ 100 (^NDX)', subtitle: '나스닥 대형 기술주 실제 지수',    link: 'https://finance.yahoo.com/quote/%5ENDX',                          years: 10, rsi: true },
+    ]
+  },
+  {
+    section: '🎭 시장 심리 & 변동성',
+    cards: [
+      { key: 'fg',  title: 'CNN Fear & Greed',  subtitle: '시장 심리 지표 · 0–100',         link: 'https://edition.cnn.com/markets/fear-and-greed', special: 'fg', years: 5  },
+      { key: 'vix', title: 'VIX',               subtitle: 'S&P 500 30일 내재변동성 (CBOE)', link: 'https://www.investing.com/indices/volatility-s-p-500',             years: 10 },
+    ]
+  },
+  {
+    section: '💰 금리 & 신용',
+    cards: [
+      { key: 'tnx', title: 'US 10Y Treasury Yield', subtitle: '미국 10년물 국채 금리 (^TNX)', link: 'https://kr.investing.com/rates-bonds/u.s.-10-year-bond-yield', years: 10 },
+      { key: 'hy',  title: 'HY OAS Spread',          subtitle: '하이일드 신용 스프레드 · FRED',  link: 'https://fred.stlouisfed.org/series/BAMLH0A0HYM2',             years: 10 },
+    ]
+  }
+];
+
+// ============================================================================
+// 차트 인스턴스 추적 (재렌더링 시 정리용)
+// ============================================================================
+const charts = {};
+
+// ============================================================================
+// 종합점수 계산 (4개 지표: SPY는 가격이라 제외하고 F&G, VIX, 10Y, HY OAS)
+// ============================================================================
+function calcComposite(ind) {
+  // 각 지표를 0-100 (risk-on)으로 정규화
+  const fg  = ind.fg  && ind.fg.ok  ? ind.fg.current : null;
+  const vix = ind.vix && ind.vix.ok ? ind.vix.current : null;
+  const tnx = ind.tnx && ind.tnx.ok ? ind.tnx.current : null;
+  const hy  = ind.hy  && ind.hy.ok  ? ind.hy.current : null;
+
+  if ([fg, vix, tnx, hy].some(v => v === null)) return null;
+
+  // yfinance ^TNX는 이미 실제 % 값 (예: 4.59)
+  const tnxPct = tnx;
+
+  const fgNorm  = fg;                                              // 이미 0-100
+  const vixNorm = Math.max(0, Math.min(100, 100 - ((vix - 10) / 30) * 100));
+  const tnxNorm = Math.max(0, Math.min(100, 100 - ((tnxPct - 2) / 3) * 100));
+  const hyNorm  = Math.max(0, Math.min(100, 100 - ((hy - 2) / 6) * 100));
+
+  const composite = Math.round((fgNorm + vixNorm + tnxNorm + hyNorm) / 4);
+
+  let cls, verdict, detail;
+  if (composite >= 65) {
+    cls = 'risk-on'; verdict = '🟢 Risk-On (위험 선호)';
+    detail = '심리·변동성·신용 모두 우호적. 단기 과열 가능성 ↑';
+  } else if (composite >= 45) {
+    cls = 'neutral'; verdict = '🟡 Neutral / Mixed';
+    detail = '지표 간 신호 엇갈림. 어느 한 축이 깨지는지 주시.';
+  } else {
+    cls = 'risk-off'; verdict = '🔴 Risk-Off (위험 회피)';
+    detail = '시장 스트레스 신호. 안전자산 선호·변동성 확대.';
+  }
+
+  return {
+    score: composite, cls, verdict, detail,
+    scores: {
+      fgRaw:   Math.round(fg),
+      fgNorm:  Math.round(fgNorm),
+      vixRaw:  vix.toFixed(2),
+      vixNorm: Math.round(vixNorm),
+      tnxRaw:  tnxPct.toFixed(3),
+      tnxNorm: Math.round(tnxNorm),
+      hyRaw:   hy.toFixed(3),
+      hyNorm:  Math.round(hyNorm),
+    }
+  };
+}
+
+// ============================================================================
+// F&G 분류
+// ============================================================================
+function classifyFG(score) {
+  if (score < 25) return { label: 'Extreme Fear', cls: 'extreme-fear' };
+  if (score < 45) return { label: 'Fear',         cls: 'fear' };
+  if (score < 55) return { label: 'Neutral',      cls: 'neutral' };
+  if (score < 75) return { label: 'Greed',        cls: 'greed' };
+  return                  { label: 'Extreme Greed', cls: 'extreme-greed' };
+}
+
+// ============================================================================
+// 카드 렌더링 - 일반 (Chart.js)
+// ============================================================================
+function renderChartCard(card, data) {
+  if (!data || !data.ok) {
+    return `
+      <div class="card">
+        <div class="card-header">
+          <div class="card-top">
+            <div>
+              <div class="card-title">${card.title}</div>
+              <div class="card-subtitle">${card.subtitle}</div>
+            </div>
+            <a class="card-link" href="${card.link}" target="_blank">원본 ↗</a>
+          </div>
+        </div>
+        <div class="error-box">⚠️ 데이터 수집 실패: ${data ? data.error : 'no data'}</div>
+      </div>`;
+  }
+
+  const change = data.change;
+  const changePct = data.change_pct;
+  const changeCls = change > 0 ? 'up' : change < 0 ? 'down' : 'flat';
+  const changeSign = change > 0 ? '+' : '';
+  const unit = data.unit === '%' ? '%' : '';
+
+  // yfinance ^TNX는 이미 실제 % 값(예: 4.59)으로 반환 — 추가 환산 불필요
+  let displayCurrent, displayChange;
+  if (card.key === 'tnx') {
+    displayCurrent = data.current.toFixed(3) + '%';
+    displayChange  = changeSign + change.toFixed(3) + '%p';
+  } else {
+    displayCurrent = data.current.toLocaleString('en-US', { maximumFractionDigits: 2 }) + (unit ? ' ' + unit : '');
+    displayChange  = changeSign + change.toFixed(2) + (unit ? unit : '');
+  }
+
+  return `
+    <div class="card">
+      <div class="card-header">
+        <div class="card-top">
+          <div>
+            <div class="card-title">${card.title}</div>
+            <div class="card-subtitle">${card.subtitle}</div>
+          </div>
+          <a class="card-link" href="${card.link}" target="_blank">원본 ↗</a>
+        </div>
+        <div class="card-stats">
+          <span class="stat-current">${displayCurrent}</span>
+          <span class="stat-change ${changeCls}">${changeSign}${changePct.toFixed(2)}%</span>
+          <span class="stat-change ${changeCls}" style="font-size:12px;">${displayChange}</span>
+        </div>
+      </div>
+      <div class="chart-wrap">
+        <canvas id="chart-${card.key}"></canvas>
+      </div>
+      ${card.rsi && data && data.rsi ? `
+      <div class="rsi-panel">
+        <div class="rsi-header">
+          <span class="rsi-title">RSI(21)</span>
+          <span class="rsi-value" id="rsi-val-${card.key}">—</span>
+          <span class="rsi-badge neutral" id="rsi-badge-${card.key}">—</span>
+          <span class="rsi-help-btn" tabindex="0">?
+            <div class="rsi-tooltip">
+              <div style="font-size:10px;color:#666;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">RSI(21) 해석 기준</div>
+              <div class="rsi-tt-row overbought"><span class="rsi-tt-range">70+</span><span>과매수 — 추가 매수 경계<small>강세장 고점 여부 확인</small></span></div>
+              <div class="rsi-tt-row upper"><span class="rsi-tt-range">60–70</span><span>강세 구간<small>상승 추세 유지</small></span></div>
+              <div class="rsi-tt-row neutral-g"><span class="rsi-tt-range">40–60</span><span>중립 — 방향성 없음<small>다른 지표 병행 확인</small></span></div>
+              <div class="rsi-tt-row lower"><span class="rsi-tt-range">30–40</span><span>약세 구간<small>하락 추세, 관망</small></span></div>
+              <div class="rsi-tt-row oversold"><span class="rsi-tt-range">–30</span><span>과매도 — 반등 가능성<small>하락장 저점·용기 낼 구간</small></span></div>
+            </div>
+          </span>
+        </div>
+        <div class="rsi-chart-wrap">
+          <canvas id="rsi-chart-${card.key}"></canvas>
+        </div>
+      </div>` : ''}
+    </div>`;
+}
+
+// ============================================================================
+// 카드 렌더링 - F&G 전용
+// ============================================================================
+function renderFGCard(card, data) {
+  if (!data || !data.ok) {
+    return `
+      <div class="card">
+        <div class="card-header">
+          <div class="card-top">
+            <div>
+              <div class="card-title">${card.title}</div>
+              <div class="card-subtitle">${card.subtitle}</div>
+            </div>
+            <a class="card-link" href="${card.link}" target="_blank">원본 ↗</a>
+          </div>
+        </div>
+        <div class="error-box">⚠️ 데이터 수집 실패: ${data ? data.error : 'no data'}</div>
+      </div>`;
+  }
+
+  const cls = classifyFG(data.current);
+  return `
+    <div class="card">
+      <div class="card-header">
+        <div class="card-top">
+          <div>
+            <div class="card-title">${card.title}</div>
+            <div class="card-subtitle">${card.subtitle}</div>
+          </div>
+          <a class="card-link" href="${card.link}" target="_blank">CNN ↗</a>
+        </div>
+      </div>
+      <div class="fg-container">
+        <div class="fg-label">현재 지수</div>
+        <div class="fg-value">${Math.round(data.current)}</div>
+        <div class="fg-status ${cls.cls}">${cls.label}</div>
+        <div class="fg-gauge">
+          <div class="fg-bar">
+            <div class="fg-marker" style="left: ${data.current}%;"></div>
+          </div>
+          <div class="fg-scale">
+            <span>0</span><span>25</span><span>50</span><span>75</span><span>100</span>
+          </div>
+        </div>
+        <div class="fg-prev">
+          <div class="fg-prev-item">
+            <div class="fg-prev-label">전일</div>
+            <div class="fg-prev-value">${Math.round(data.previous_close)}</div>
+          </div>
+          <div class="fg-prev-item">
+            <div class="fg-prev-label">1주 전</div>
+            <div class="fg-prev-value">${Math.round(data.previous_1_week)}</div>
+          </div>
+          <div class="fg-prev-item">
+            <div class="fg-prev-label">1개월 전</div>
+            <div class="fg-prev-value">${Math.round(data.previous_1_month)}</div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+// ============================================================================
+// Chart.js 인스턴스 생성
+// ============================================================================
+function drawChart(key, data, defaultYears) {
+  const ctx = document.getElementById('chart-' + key);
+  if (!ctx || !data || !data.ok) return;
+
+  if (charts[key]) {
+    charts[key].destroy();
+  }
+
+  // TNX는 yfinance에서 이미 실제 % 값 — 추가 환산 없이 그대로 표시
+  const isTnx = (key === 'tnx');
+  let history = data.history;
+  if (defaultYears) {
+    const cutoff = new Date();
+    cutoff.setFullYear(cutoff.getFullYear() - defaultYears);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    history = history.filter(d => d.date >= cutoffStr);
+  }
+  const labels = history.map(d => d.date);
+  const values = history.map(d => d.close);
+
+  // 상승/하락에 따른 색상
+  const last = values[values.length - 1];
+  const first = values[0];
+  const isUp = last >= first;
+  const lineColor = isUp ? '#5dcaa5' : '#e24b4a';
+  const fillColor = isUp ? 'rgba(93, 202, 165, 0.1)' : 'rgba(226, 75, 74, 0.1)';
+
+  charts[key] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        data: values,
+        borderColor: lineColor,
+        backgroundColor: fillColor,
+        borderWidth: 1.5,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        pointHoverBackgroundColor: lineColor,
+        fill: true,
+        tension: 0.2,
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#14171c',
+          titleColor: '#ccc',
+          bodyColor: '#fff',
+          borderColor: '#2a2e35',
+          borderWidth: 1,
+          padding: 10,
+          displayColors: false,
+          callbacks: {
+            label: function(ctx) {
+              const v = ctx.parsed.y;
+              if (isTnx) return v.toFixed(3) + '%';
+              if (key === 'hy' || key === 'fg') return v.toFixed(2);
+              return v.toLocaleString('en-US', { maximumFractionDigits: 2 });
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          ticks: {
+            color: '#666',
+            font: { size: 10 },
+            maxRotation: 0,
+            autoSkip: true,
+            maxTicksLimit: maxTicks(),
+            callback: function(val, idx) {
+              const label = this.getLabelForValue(val);
+              if (!label) return '';
+              // 모바일: YYYY-MM-DD → YY.MM 단축
+              if (isMobile() && label.length >= 10) {
+                return label.slice(2,4) + '.' + label.slice(5,7);
+              }
+              // 데스크탑: YYYY-MM-DD → YYYY-MM
+              if (label.length >= 10) return label.slice(0,7);
+              return label;
+            }
+          },
+          grid: { display: false },
+        },
+        y: {
+          position: 'right',
+          ticks: {
+            color: '#666',
+            font: { size: 10 },
+            callback: function(v) {
+              if (isTnx) return v.toFixed(2) + '%';
+              if (v >= 1000) return v.toLocaleString('en-US', { maximumFractionDigits: 0 });
+              return v.toFixed(2);
+            }
+          },
+          grid: { color: '#1f2228' },
+        }
+      }
+    }
+  });
+
+  // linkedCharts에 가격 차트 등록 (RSI 연동용)
+  if (key === 'spy' || key === 'qqq') {
+    if (!linkedCharts[key]) linkedCharts[key] = {};
+    linkedCharts[key].price = charts[key];
+    // RSI 차트가 이미 준비됐으면 즉시 연동
+    if (linkedCharts[key].rsi) {
+      setTimeout(() => attachCrosshairSync(key), 100);
+    }
+  }
+}
+
+// ============================================================================
+// 메인 렌더링
+// ============================================================================
+function render(jsonData) {
+  const ind = jsonData.indicators;
+  const container = document.getElementById('dashboard-content');
+
+  // 종합점수
+  const composite = calcComposite(ind);
+  const compositeContainer = document.getElementById('composite-container');
+  if (composite) {
+    const scores = composite.scores || {};
+  compositeContainer.innerHTML = `
+    <div class="composite-card ${composite.cls}">
+      <div style="flex:1;">
+        <div class="composite-label">Composite Reading</div>
+        <div class="composite-verdict">${composite.verdict}</div>
+        <div class="composite-detail">${composite.detail}</div>
+        <span class="composite-toggle" onclick="toggleCompositeDetail()">▸ 계산 과정 보기</span>
+        <div class="composite-detail-panel" id="composite-detail-panel">
+          <b>4개 지표를 각각 0–100 (높을수록 위험선호)으로 정규화 후 평균</b><br><br>
+          <div class="score-bar-row">
+            <span class="score-bar-label">F&amp;G (${scores.fgRaw ?? '—'})</span>
+            <div class="score-bar-track"><div class="score-bar-fill" style="width:${scores.fgNorm ?? 0}%; background:#f0b070;"></div></div>
+            <span class="score-bar-val">${scores.fgNorm != null ? Math.round(scores.fgNorm) : '—'}</span>
+          </div>
+          <div class="score-bar-row">
+            <span class="score-bar-label">VIX (${scores.vixRaw ?? '—'})</span>
+            <div class="score-bar-track"><div class="score-bar-fill" style="width:${scores.vixNorm ?? 0}%; background:#a78bfa;"></div></div>
+            <span class="score-bar-val">${scores.vixNorm != null ? Math.round(scores.vixNorm) : '—'}</span>
+          </div>
+          <div class="score-bar-row">
+            <span class="score-bar-label">10Y (${scores.tnxRaw ?? '—'}%)</span>
+            <div class="score-bar-track"><div class="score-bar-fill" style="width:${scores.tnxNorm ?? 0}%; background:#5dcaa5;"></div></div>
+            <span class="score-bar-val">${scores.tnxNorm != null ? Math.round(scores.tnxNorm) : '—'}</span>
+          </div>
+          <div class="score-bar-row">
+            <span class="score-bar-label">HY OAS (${scores.hyRaw ?? '—'}%)</span>
+            <div class="score-bar-track"><div class="score-bar-fill" style="width:${scores.hyNorm ?? 0}%; background:#f09595;"></div></div>
+            <span class="score-bar-val">${scores.hyNorm != null ? Math.round(scores.hyNorm) : '—'}</span>
+          </div>
+          <br>
+          <b>정규화 공식</b><br>
+          F&amp;G: 그대로 (0–100)<br>
+          VIX: 100 − ((VIX−10) / 30 × 100) · VIX=10→100, VIX=40→0<br>
+          10Y: 100 − ((금리−2) / 3 × 100) · 2%→100, 5%→0<br>
+          HY OAS: 100 − ((스프레드−2) / 6 × 100) · 2%→100, 8%→0<br>
+          <br>
+          <b>종합점수</b> = (${scores.fgNorm != null ? Math.round(scores.fgNorm) : '—'} + ${scores.vixNorm != null ? Math.round(scores.vixNorm) : '—'} + ${scores.tnxNorm != null ? Math.round(scores.tnxNorm) : '—'} + ${scores.hyNorm != null ? Math.round(scores.hyNorm) : '—'}) ÷ 4 = <b>${composite.score}</b>/100
+        </div>
+      </div>
+      <div class="composite-score">${composite.score}/100</div>
+    </div>`;
+  } else {
+    compositeContainer.innerHTML = '';
+  }
+
+  // 카드 HTML 조립
+  let html = '';
+  CARD_DEFS.forEach(section => {
+    html += `<div class="section-label">${section.section}</div>`;
+    html += `<div class="grid">`;
+    section.cards.forEach(card => {
+      const data = ind[card.key];
+      if (card.special === 'fg') {
+        html += renderFGCard(card, data);
+      } else {
+        html += renderChartCard(card, data);
+      }
+    });
+    html += `</div>`;
+  });
+  container.innerHTML = html;
+
+  // 차트 그리기 (DOM에 canvas가 생긴 후)
+  CARD_DEFS.forEach(section => {
+    section.cards.forEach(card => {
+      if (card.special !== 'fg') {
+        drawChart(card.key, ind[card.key], card.years || 10);
+        if (card.rsi && ind[card.key] && ind[card.key].rsi) {
+          renderRSI(card.key, ind[card.key], card.years || 10);
+        }
+      }
+    });
+  });
+
+  renderCommodityTab(ind);
+  renderKrusTab(jsonData.kr_us);
+
+  // 상태 표시
+  const statusEl = document.getElementById('status');
+  const updated = new Date(jsonData.updated_at);
+  const updatedKst = updated.toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' });
+  statusEl.textContent = `✅ 최종 갱신: ${updatedKst}`;
+  statusEl.className = 'status ok';
+}
+
+// ============================================================================
+// 데이터 로드 (캐시 방지 쿼리스트링 추가)
+// ============================================================================
+async function loadData() {
+  try {
+    const res = await fetch('data.json?t=' + Date.now());
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    render(data);
+  } catch (e) {
+    const statusEl = document.getElementById('status');
+    statusEl.textContent = `❌ data.json 로드 실패: ${e.message}`;
+    statusEl.className = 'status error';
+    document.getElementById('dashboard-content').innerHTML = `
+      <div class="error-box" style="margin: 20px 0;">
+        <b>data.json 파일을 찾을 수 없습니다.</b><br><br>
+        터미널에서 다음 명령을 먼저 실행해주세요:<br>
+        <code style="background:#0e1014;padding:6px 10px;border-radius:4px;display:inline-block;margin-top:8px;">
+          python fetch_data.py
+        </code><br><br>
+        그 후 이 페이지를 새로고침하세요.<br><br>
+        <b>주의</b>: HTML 파일을 직접 더블클릭으로 열면 브라우저가 data.json을 못 읽을 수 있습니다.<br>
+        반드시 로컬 서버로 실행해주세요:<br>
+        <code style="background:#0e1014;padding:6px 10px;border-radius:4px;display:inline-block;margin-top:8px;">
+          python -m http.server 8000
+        </code><br>
+        그 후 <a href="http://localhost:8000/dashboard.html" style="color:#4a9eff;">http://localhost:8000/dashboard.html</a> 접속
+      </div>`;
+  }
+}
+
+loadData();
+// 30초마다 data.json 다시 읽기
+setInterval(loadData, 30 * 1000);
+
+
+
+// ── DFII10 · BEI 렌더링 ──
+function renderRateSummary(tnxData, dfii10Data, beiData) {
+  const el = document.getElementById('rate-summary');
+  if (!el) return;
+
+  const fmt = (d, digits=3) => d && d.ok
+    ? `<span style="color:${d.current < 0 ? '#f09595' : '#c0dd97'}">${d.current.toFixed(digits)}%</span>`
+    : '<span style="color:#555">—</span>';
+
+  const chgArrow = (d) => {
+    if (!d || !d.ok || !d.history || d.history.length < 2) return '';
+    const chg = d.current - d.history[d.history.length - 2].close;
+    return chg > 0
+      ? `<span style="color:#f09595; font-size:10px;"> ▲${Math.abs(chg).toFixed(3)}</span>`
+      : `<span style="color:#c0dd97; font-size:10px;"> ▼${Math.abs(chg).toFixed(3)}</span>`;
+  };
+
+  el.innerHTML = `
+    <div class="rate-cell">
+      <div class="rate-cell-label">명목금리 (10Y)</div>
+      <div class="rate-cell-val">${fmt(tnxData)}${chgArrow(tnxData)}</div>
+      <div class="rate-cell-sub">^TNX</div>
+    </div>
+    <div class="rate-cell">
+      <div class="rate-cell-label">실질금리 (TIPS)</div>
+      <div class="rate-cell-val">${fmt(dfii10Data)}${chgArrow(dfii10Data)}</div>
+      <div class="rate-cell-sub">DFII10</div>
+    </div>
+    <div class="rate-cell">
+      <div class="rate-cell-label">기대 인플레 (BEI)</div>
+      <div class="rate-cell-val">${fmt(beiData)}${chgArrow(beiData)}</div>
+      <div class="rate-cell-sub">TNX − DFII10</div>
+    </div>
+  `;
+}
+
+function renderGoldRegime(goldData, dfii10Data, spxData, dxyData) {
+  const container = document.getElementById('gold-interp-dynamic');
+  const subtitle  = document.getElementById('gold-interp-subtitle');
+  if (!container) return;
+
+  if (!goldData || !goldData.ok || !dfii10Data || !dfii10Data.ok) {
+    if (subtitle) subtitle.textContent = '데이터 부족';
+    return;
+  }
+
+  // 방향 판단: 최근 5일 평균 변화
+  const recentAvg = (data, n=5) => {
+    if (!data.ok || data.history.length < n+1) return 0;
+    const h = data.history;
+    return h[h.length-1].close - h[h.length-1-n].close;
+  };
+
+  const goldDir  = recentAvg(goldData);   // 양수 = 금 상승
+  const rateDir  = recentAvg(dfii10Data); // 양수 = 실질금리 상승
+  const spxDir   = spxData  && spxData.ok  ? recentAvg(spxData)  : 0;
+  const dxyDir   = dxyData  && dxyData.ok  ? recentAvg(dxyData)  : 0;
+
+  const real = dfii10Data.current.toFixed(3);
+  const bei  = dfii10Data.ok ? '—' : '—';
+
+  let regime, bannerCls, bannerText;
+
+  if (goldDir > 0 && rateDir < 0) {
+    regime = '🟢 금 강세 전형 환경';
+    bannerCls = 'bullish';
+    bannerText = `현재 금↑ + 실질금리↓ (${real}%) → 금리 인하 기대 or 인플레 헤지 국면`;
+  } else if (goldDir > 0 && spxDir < 0) {
+    regime = '🟢 Risk-Off 안전자산 수요';
+    bannerCls = 'bullish';
+    bannerText = `현재 금↑ + 주식↓ → 안전자산 선호 강화, 방어적 포지션 우위`;
+  } else if (goldDir > 0 && dxyDir > 0) {
+    regime = '🟡 이례적 동반 강세';
+    bannerCls = 'caution';
+    bannerText = `현재 금↑ + 달러↑ → 중앙은행 매수 or 지정학 요인 가능성, 일반적이지 않은 환경`;
+  } else if (goldDir < 0 && rateDir > 0) {
+    regime = '🔴 실질금리 압박';
+    bannerCls = 'bearish';
+    bannerText = `현재 금↓ + 실질금리↑ (${real}%) → 금에 역풍. 달러·금리 강세 환경`;
+  } else if (goldDir < 0 && spxDir < 0) {
+    regime = '🔴 유동성 위기 가능성';
+    bannerCls = 'bearish';
+    bannerText = `현재 금↓ + 주식↓ → 레버리지 청산 or 달러 강세 주도 매도 환경`;
+  } else {
+    regime = '⚪ 방향성 불명확';
+    bannerCls = 'neutral';
+    bannerText = `최근 5일 기준 뚜렷한 방향성 없음. 다른 지표(VIX·HY OAS)와 병행 확인 필요`;
+  }
+
+  if (subtitle) subtitle.textContent = regime;
+
+  // 배너 삽입 (기존 내용 앞에)
+  const banner = `<div class="gold-regime-banner ${bannerCls}">${bannerText}</div>`;
+
+  // 기존 해석 가이드 텍스트는 유지, 배너만 앞에 추가
+  const existing = container.innerHTML;
+  if (!container.querySelector('.gold-regime-banner')) {
+    container.innerHTML = banner + existing;
+  } else {
+    container.querySelector('.gold-regime-banner').className = `gold-regime-banner ${bannerCls}`;
+    container.querySelector('.gold-regime-banner').textContent = bannerText;
+    if (subtitle) subtitle.textContent = regime;
+  }
+}
+
+function renderDFII10Stats(data) {
+  const el = document.getElementById('stats-dfii10');
+  if (!el || !data || !data.ok) return;
+  const chg = data.change;
+  const cls = chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
+  const sign = chg > 0 ? '+' : '';
+  el.innerHTML = `
+    <span class="stat-current">${data.current.toFixed(3)}<span style="font-size:14px;color:#888;">%</span></span>
+    <span class="stat-change ${cls}">${sign}${data.change_pct.toFixed(2)}%</span>
+    <span class="stat-change ${cls}" style="font-size:12px;">${sign}${chg.toFixed(3)}%p</span>
+    <span style="font-size:11px; color: ${data.current < 0 ? '#f09595' : '#c0dd97'}; margin-left:6px;">
+      ${data.current < 0 ? '음의 실질금리 (금 우호)' : '양의 실질금리'}
+    </span>
+  `;
+}
+
+function renderBEIStats(data) {
+  const el = document.getElementById('stats-bei');
+  if (!el || !data || !data.ok) return;
+  const chg = data.change;
+  const cls = chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
+  const sign = chg > 0 ? '+' : '';
+  let level = '';
+  if (data.current > 2.5) level = '<span style="color:#f09595; font-size:11px;">인플레 우려↑</span>';
+  else if (data.current > 2.0) level = '<span style="color:#f0b070; font-size:11px;">Fed 목표 상단</span>';
+  else level = '<span style="color:#c0dd97; font-size:11px;">안정권</span>';
+  el.innerHTML = `
+    <span class="stat-current">${data.current.toFixed(3)}<span style="font-size:14px;color:#888;">%</span></span>
+    <span class="stat-change ${cls}">${sign}${data.change_pct.toFixed(2)}%</span>
+    ${level}
+  `;
+}
+
+// ── 원자재 탭 렌더링 ──
+function retCls(v) {
+  if (v === null || v === undefined) return 'flat';
+  return v > 0 ? 'up' : v < 0 ? 'down' : 'flat';
+}
+function retFmt(v) {
+  if (v === null || v === undefined) return '—';
+  return (v > 0 ? '+' : '') + v.toFixed(2) + '%';
+}
+
+function renderReturnsTable(containerId, returns) {
+  const el = document.getElementById(containerId);
+  if (!el || !returns) return;
+  const periods = [
+    { key: '1d', label: '1D' },
+    { key: '1m', label: '1M' },
+    { key: '3m', label: '3M' },
+    { key: '6m', label: '6M' },
+    { key: '12m', label: '12M' },
+  ];
+  el.innerHTML = periods.map(p => `
+    <div class="ret-cell">
+      <div class="ret-period">${p.label}</div>
+      <div class="ret-val ${retCls(returns[p.key])}">${retFmt(returns[p.key])}</div>
+    </div>`).join('');
+}
+
+function renderCommodityStats(statsId, data) {
+  const el = document.getElementById(statsId);
+  if (!el || !data || !data.ok) return;
+  const change = data.change;
+  const cls = change > 0 ? 'up' : change < 0 ? 'down' : 'flat';
+  const sign = change > 0 ? '+' : '';
+  const unit = data.unit || '';
+  el.innerHTML = `
+    <span class="stat-current">${data.current.toLocaleString('en-US', {maximumFractionDigits: 2})}
+      <span style="font-size:14px; color:#888;"> ${unit}</span>
+    </span>
+    <span class="stat-change ${cls}">${sign}${data.change_pct.toFixed(2)}%</span>
+    <span class="stat-change ${cls}" style="font-size:12px;">${sign}${change.toFixed(2)}</span>
+    ${data.ma200 ? `<span class="ma200-badge ${data.ma200.diff_pct >= 0 ? 'above' : 'below'}">
+      MA200 ${data.ma200.diff_pct >= 0 ? '▲' : '▼'} ${Math.abs(data.ma200.diff_pct).toFixed(1)}%
+    </span>` : ''}
+  `;
+}
+
+function drawCommodityChart(key, data, color, defaultYears) {
+  const ctx = document.getElementById('chart-' + key);
+  if (!ctx || !data || !data.ok) return;
+  if (charts[key]) charts[key].destroy();
+
+  let history = data.history;
+  if (defaultYears) {
+    const cutoff = new Date();
+    cutoff.setFullYear(cutoff.getFullYear() - defaultYears);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    history = history.filter(d => d.date >= cutoffStr);
+  }
+
+  const labels = history.map(d => d.date);
+  const values = history.map(d => d.close);
+  const isUp   = values[values.length - 1] >= values[0];
+  const lc = color || (isUp ? '#5dcaa5' : '#e24b4a');
+  const fc = lc === '#5dcaa5' ? 'rgba(93,202,165,0.1)' : lc === '#e24b4a' ? 'rgba(226,75,74,0.1)' : 'rgba(255,200,50,0.1)';
+
+  charts[key] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{ data: values, borderColor: lc, backgroundColor: fc,
+        borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 4,
+        pointHoverBackgroundColor: lc, fill: true, tension: 0.2 }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#14171c', titleColor: '#ccc', bodyColor: '#fff',
+          borderColor: '#2a2e35', borderWidth: 1, padding: 10, displayColors: false,
+          callbacks: { label: ctx => ctx.parsed.y.toLocaleString('en-US', {maximumFractionDigits: 3}) }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#666', font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: maxTicks(),
+          callback: function(val) {
+            const label = this.getLabelForValue(val);
+            if (!label) return '';
+            if (isMobile() && label.length >= 10) return label.slice(2,4) + '.' + label.slice(5,7);
+            if (label.length >= 10) return label.slice(0,7);
+            return label;
+          }
+        }, grid: { display: false } },
+        y: { position: 'right', ticks: { color: '#666', font: { size: 10 },
+          callback: v => v.toLocaleString('en-US', {maximumFractionDigits: 2}) }, grid: { color: '#1f2228' } }
+      }
+    }
+  });
+}
+
+function renderCommodityTab(ind) {
+  // Brent
+  renderCommodityStats('stats-brent', ind.brent);
+  drawCommodityChart('brent', ind.brent, null, 10);
+  renderReturnsTable('returns-brent', ind.brent && ind.brent.returns);
+
+  // Gold
+  renderCommodityStats('stats-gold', ind.gold);
+  drawCommodityChart('gold', ind.gold, '#f0b070', 10);
+  renderReturnsTable('returns-gold', ind.gold && ind.gold.returns);
+
+  // DFII10 (실질금리)
+  renderDFII10Stats(ind.dfii10);
+  drawCommodityChart('dfii10', ind.dfii10, '#a78bfa', 10);
+  renderRateSummary(ind.tnx, ind.dfii10, ind.bei);
+
+  // BEI (기대 인플레이션)
+  renderBEIStats(ind.bei);
+  drawCommodityChart('bei', ind.bei, '#f0b070', 10);
+
+  // 금 해석 가이드 동적 업데이트
+  renderGoldRegime(ind.gold, ind.dfii10, ind.spy, ind.dxy);
+
+  // DXY
+  renderCommodityStats('stats-dxy', ind.dxy);
+  drawCommodityChart('dxy', ind.dxy, null, 5);
+  renderReturnsTable('returns-dxy', ind.dxy && ind.dxy.returns);
+
+  // Gold/Oil Ratio
+  const gor = ind.gold_oil_ratio;
+  const gorStats = document.getElementById('stats-gor');
+  if (gorStats && gor && gor.ok) {
+    const prev = gor.history.length > 1 ? gor.history[gor.history.length - 2].close : gor.current;
+    const chg  = gor.current - prev;
+    const cls  = chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
+    gorStats.innerHTML = `
+      <span class="stat-current">${gor.current.toFixed(2)}</span>
+      <span class="stat-change ${cls}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}</span>
+    `;
+  }
+  drawCommodityChart('gor', gor, '#a78bfa', 10);
+}
+
+
+// ============================================================================
+// US vs Korea 탭 렌더링
+// ============================================================================
+
+function fmtKrus(v, digits=2, unit='') {
+  if (v === null || v === undefined) return '—';
+  return v.toFixed(digits) + unit;
+}
+
+function krusChgCls(v) {
+  if (!v && v !== 0) return 'flat';
+  return v > 0 ? 'up' : v < 0 ? 'down' : 'flat';
+}
+
+// KPI 카드 6개 생성
+function renderKrusKPI(krus) {
+  const grid = document.getElementById('krus-kpi-grid');
+  if (!grid) return;
+
+  const cards = [
+    {
+      title: '🌡️ 인플레이션 (CPI YoY)',
+      us: krus.us_cpi, kr: krus.kr_cpi,
+      digits: 2, unit: '%',
+    },
+    {
+      title: '👷 고용률 / 실업률',
+      us: krus.us_unemp, kr: krus.kr_employ,
+      digits: 2, unit: '%',
+      invertWin: false, // 고용률은 높을수록 좋음
+    },
+    {
+      title: '🏦 10Y 국채금리',
+      us: krus.us_10y, kr: krus.kr_10y,
+      digits: 3, unit: '%',
+    },
+    {
+      title: '🎯 기준금리',
+      us: krus.us_rate, kr: krus.kr_rate,
+      digits: 2, unit: '%',
+    },
+    {
+      title: '💱 KRW/USD 환율',
+      single: krus.krw_usd,
+      digits: 1, unit: '원',
+    },
+    {
+      title: '📐 한미 10Y 금리차',
+      single: krus.spread_10y,
+      digits: 3, unit: '%p',
+      note: '양수=미국高',
+    },
+  ];
+
+  grid.innerHTML = cards.map(c => {
+    if (c.single) {
+      const d = c.single;
+      const val = d && d.ok ? fmtKrus(d.current, c.digits, c.unit) : '—';
+      const chg = d && d.ok ? d.change : null;
+      const cls = krusChgCls(chg);
+      return `
+        <div class="krus-kpi-card">
+          <div class="krus-kpi-title">${c.title}</div>
+          <div style="margin-top:8px; font-size:20px; font-weight:500; color:#e8e8e8; font-variant-numeric:tabular-nums;">${val}</div>
+          ${chg !== null ? `<div class="krus-kpi-diff" style="color:${cls==='up'?'#c0dd97':cls==='down'?'#f09595':'#888'}">
+            ${chg>=0?'+':''}${fmtKrus(chg, c.digits, c.unit)} ${c.note||''}
+          </div>` : ''}
+        </div>`;
+    }
+    const us = c.us, kr = c.kr;
+    const usVal = us && us.ok ? us.current : null;
+    const krVal = kr && kr.ok ? kr.current : null;
+    const diff  = (usVal !== null && krVal !== null) ? round2(usVal - krVal) : null;
+    const usWin = c.invertWin
+      ? (usVal !== null && krVal !== null && usVal < krVal)
+      : (usVal !== null && krVal !== null && usVal > krVal);
+
+    return `
+      <div class="krus-kpi-card">
+        <div class="krus-kpi-title">${c.title}</div>
+        <div class="krus-kpi-row">
+          <div class="krus-kpi-side">
+            <div class="krus-kpi-flag">🇺🇸 미국</div>
+            <div class="krus-kpi-val us-val">${usVal !== null ? fmtKrus(usVal, c.digits, c.unit) : '—'}</div>
+          </div>
+          <div class="krus-kpi-divider">|</div>
+          <div class="krus-kpi-side" style="text-align:right;">
+            <div class="krus-kpi-flag">🇰🇷 한국</div>
+            <div class="krus-kpi-val kr-val">${krVal !== null ? fmtKrus(krVal, c.digits, c.unit) : '—'}</div>
+          </div>
+        </div>
+        ${diff !== null ? `<div class="krus-kpi-diff">차이: ${diff >= 0 ? '+' : ''}${fmtKrus(diff, c.digits, c.unit)} (US−KR)</div>` : ''}
+      </div>`;
+  }).join('');
+}
+
+function round2(v) { return Math.round(v * 1000) / 1000; }
+
+// 비교 차트 (두 선)
+function drawCompareChart(canvasId, data1, data2, label1, label2, color1, color2, unit, defaultYears) {
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return;
+  if (charts[canvasId]) charts[canvasId].destroy();
+
+  const map1 = {};
+  const map2 = {};
+  (data1 && data1.ok ? data1.history : []).forEach(p => map1[p.date] = p.close);
+  (data2 && data2.ok ? data2.history : []).forEach(p => map2[p.date] = p.close);
+  let allDates = [...new Set([...Object.keys(map1), ...Object.keys(map2)])].sort();
+
+  // 기본 표시 기간 적용 (defaultYears 지정 시 최근 N년만 표시)
+  if (defaultYears) {
+    const cutoff = new Date();
+    cutoff.setFullYear(cutoff.getFullYear() - defaultYears);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    allDates = allDates.filter(d => d >= cutoffStr);
+  }
+
+  charts[canvasId] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: allDates,
+      datasets: [
+        {
+          label: label1,
+          data: allDates.map(d => map1[d] !== undefined ? map1[d] : null),
+          borderColor: color1, backgroundColor: color1 + '18',
+          borderWidth: 1.8, pointRadius: 0, pointHoverRadius: 4,
+          fill: false, tension: 0.2, spanGaps: true,
+        },
+        {
+          label: label2,
+          data: allDates.map(d => map2[d] !== undefined ? map2[d] : null),
+          borderColor: color2, backgroundColor: color2 + '18',
+          borderWidth: 1.8, pointRadius: 0, pointHoverRadius: 4,
+          fill: false, tension: 0.2, spanGaps: true,
+        },
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          display: true,
+          labels: { color: '#888', font: { size: 11 }, boxWidth: 12, padding: 10 }
+        },
+        tooltip: {
+          backgroundColor: '#14171c', titleColor: '#ccc', bodyColor: '#fff',
+          borderColor: '#2a2e35', borderWidth: 1, padding: 10,
+          callbacks: { label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y !== null ? ctx.parsed.y.toFixed(3) + (unit||'') : '—'}` }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#666', font: { size: 10 }, maxRotation: 0, autoSkip: true, maxTicksLimit: maxTicks(),
+          callback: function(val) {
+            const label = this.getLabelForValue(val);
+            if (!label) return '';
+            if (isMobile() && label.length >= 10) return label.slice(2,4) + '.' + label.slice(5,7);
+            if (label.length >= 10) return label.slice(0,7);
+            return label;
+          }
+        }, grid: { display: false } },
+        y: { position: 'right', ticks: { color: '#666', font: { size: 10 }, callback: v => v.toFixed(2) + (unit||'') }, grid: { color: '#1f2228' } }
+      }
+    }
+  });
+}
+
+// KRW 단일 차트
+function renderKrwStats(data) {
+  const el = document.getElementById('stats-krw');
+  if (!el || !data || !data.ok) return;
+  const chg = data.change;
+  const cls = chg > 0 ? 'up' : chg < 0 ? 'down' : 'flat';
+  const sign = chg > 0 ? '+' : '';
+  el.innerHTML = `
+    <span class="stat-current">${data.current.toFixed(1)}<span style="font-size:14px;color:#888;"> KRW/USD</span></span>
+    <span class="stat-change ${cls}">${sign}${chg.toFixed(1)}</span>
+    <span style="font-size:11px;color:${chg>0?'#f09595':'#c0dd97'};margin-left:6px;">
+      ${chg > 0 ? '원화 약세' : '원화 강세'}
+    </span>`;
+}
+
+function renderSpreadStats(krus) {
+  const el = document.getElementById('stats-spread');
+  if (!el) return;
+  const s10 = krus.spread_10y;
+  const sr  = krus.spread_rate;
+  const fmt = d => d && d.ok ? `${d.current >= 0 ? '+' : ''}${d.current.toFixed(3)}%p` : '—';
+  el.innerHTML = `
+    <span class="stat-current" style="font-size:20px;">${fmt(s10)}</span>
+    <span style="font-size:12px;color:#888;margin-left:8px;">10Y 금리차</span>
+    <span class="stat-change flat" style="margin-left:12px;">정책금리차: ${fmt(sr)}</span>`;
+}
+
+// 거시 국면 해석 패널
+function renderKrusInterp(krus) {
+  const grid = document.getElementById('krus-interp-grid');
+  if (!grid) return;
+
+  const interps = [];
+
+  // 1. 물가 우위
+  const usCpi = krus.us_cpi && krus.us_cpi.ok ? krus.us_cpi.current : null;
+  const krCpi = krus.kr_cpi && krus.kr_cpi.ok ? krus.kr_cpi.current : null;
+  if (usCpi !== null && krCpi !== null) {
+    const diff = usCpi - krCpi;
+    const winner = diff > 0.3 ? 'us-ahead' : diff < -0.3 ? 'kr-ahead' : 'neutral';
+    const verdict = diff > 0.3
+      ? `🇺🇸 미국 인플레 압력 우위 (+${diff.toFixed(2)}%p)`
+      : diff < -0.3
+      ? `🇰🇷 한국 인플레 압력 우위 (${diff.toFixed(2)}%p)`
+      : '⚪ 양국 인플레 압력 유사';
+    const detail = diff > 0.3
+      ? `미국 CPI ${usCpi.toFixed(2)}% vs 한국 ${krCpi.toFixed(2)}%. 미국이 더 끈질긴 인플레 환경. Fed 긴축 장기화 리스크.`
+      : diff < -0.3
+      ? `한국 CPI ${krCpi.toFixed(2)}% vs 미국 ${usCpi.toFixed(2)}%. 한국 물가 압력 상대적 우위. 한은 긴축 필요성 ↑.`
+      : `미국 ${usCpi.toFixed(2)}% / 한국 ${krCpi.toFixed(2)}%. 유사한 인플레 수준. 양국 통화정책 방향이 핵심 변수.`;
+    interps.push({ title: '🌡️ 물가 압력', verdict, detail, cls: winner });
+  }
+
+  // 2. 금융여건 (금리차 기반)
+  const sp10 = krus.spread_10y;
+  const spR  = krus.spread_rate;
+  if (sp10 && sp10.ok) {
+    const v = sp10.current;
+    const winner = v > 0.5 ? 'us-ahead' : v < -0.5 ? 'kr-ahead' : 'neutral';
+    const verdict = v > 0.5
+      ? `🇺🇸 미국 금융여건 더 긴축 (+${v.toFixed(2)}%p)`
+      : v < -0.5
+      ? `🇰🇷 한국 금융여건 더 긴축 (${v.toFixed(2)}%p)`
+      : '⚪ 한미 금리 수준 유사';
+    const detail = `한미 10Y 금리차 ${v >= 0 ? '+' : ''}${v.toFixed(3)}%p` +
+      (spR && spR.ok ? ` / 정책금리차 ${spR.current >= 0 ? '+' : ''}${spR.current.toFixed(2)}%p` : '') +
+      `. ${v > 0 ? '달러 강세·원화 약세 압력 구조.' : '달러 약세·원화 지지 여건.'}`;
+    interps.push({ title: '🏦 금융여건 긴축도', verdict, detail, cls: winner });
+  }
+
+  // 3. 고용시장
+  const usUnemp  = krus.us_unemp  && krus.us_unemp.ok  ? krus.us_unemp.current  : null;
+  const krEmploy = krus.kr_employ && krus.kr_employ.ok ? krus.kr_employ.current : null;
+  if (usUnemp !== null && krEmploy !== null) {
+    // 미국: 실업률(낮을수록 좋음) / 한국: 고용률(높을수록 좋음) → 역방향
+    const usStrong = usUnemp < 4.5;   // 미국 실업률 4.5% 미만 = 견조
+    const krStrong = krEmploy > 62.0; // 한국 고용률 62% 초과 = 견조
+    const winner = (usStrong && !krStrong) ? 'us-ahead' : (!usStrong && krStrong) ? 'kr-ahead' : 'neutral';
+    const verdict = winner === 'us-ahead'
+      ? `🇺🇸 미국 고용시장 상대적 견조`
+      : winner === 'kr-ahead'
+      ? `🇰🇷 한국 고용시장 상대적 견조`
+      : '⚪ 한미 고용시장 유사 수준';
+    const detail = `미국 실업률 ${usUnemp.toFixed(2)}% / 한국 고용률 ${krEmploy.toFixed(2)}% (계절조정). ` +
+      `※ 지표 방향이 달라 직접 비교 불가, 각국 기준으로 해석 필요.`;
+    interps.push({ title: '👷 고용시장', verdict, detail, cls: winner });
+  }
+
+  // 4. 환율 취약도
+  const krw = krus.krw_usd;
+  if (krw && krw.ok) {
+    const chg3m = krw.val_3m_ago ? round2(((krw.current - krw.val_3m_ago) / krw.val_3m_ago) * 100) : null;
+    const winner = chg3m !== null && chg3m > 2 ? 'kr-ahead' : chg3m !== null && chg3m < -2 ? 'us-ahead' : 'neutral';
+    const verdict = chg3m !== null
+      ? (chg3m > 2 ? `🇰🇷 원화 약세 지속 (3M: +${chg3m.toFixed(2)}%)` : chg3m < -2 ? `🇰🇷 원화 강세 (3M: ${chg3m.toFixed(2)}%)` : '⚪ 환율 안정 구간')
+      : '⚪ 환율 방향 분석 중';
+    const detail = `현재 KRW/USD ${krw.current.toFixed(1)}원${chg3m !== null ? `. 3개월 변화 ${chg3m >= 0 ? '+' : ''}${chg3m.toFixed(2)}%.` : '.'} ${
+      chg3m > 2 ? '한국 수입물가 상승 압력, 경상수지 영향 주시.' : chg3m < -2 ? '원화 강세로 수출 경쟁력 일부 약화 가능.' : '환율 변동성 제한적.'
+    }`;
+    interps.push({ title: '💱 환율 취약도', verdict, detail, cls: winner });
+  }
+
+  grid.innerHTML = interps.map(i => `
+    <div class="krus-interp-card ${i.cls}">
+      <div class="krus-interp-title">${i.title}</div>
+      <div class="krus-interp-verdict">${i.verdict}</div>
+      <div class="krus-interp-detail">${i.detail}</div>
+    </div>`).join('');
+}
+
+// 메인 렌더
+function renderKrusTab(krus) {
+  if (!krus) return;
+
+  renderKrusKPI(krus);
+  renderKrusInterp(krus);
+
+  // 비교 차트 4개
+  drawCompareChart('chart-cpi-compare',
+    krus.us_cpi, krus.kr_cpi, '🇺🇸 미국 CPI YoY', '🇰🇷 한국 CPI YoY',
+    '#5dcaa5', '#f0b070', '%', 10);
+
+  drawCompareChart('chart-unemp-compare',
+    krus.us_unemp, krus.kr_employ, '🇺🇸 미국 실업률', '🇰🇷 한국 고용률(계절조정)',
+    '#5dcaa5', '#f0b070', '%', 10);
+
+  drawCompareChart('chart-10y-compare',
+    krus.us_10y, krus.kr_10y, '🇺🇸 미국 10Y', '🇰🇷 한국 10Y',
+    '#5dcaa5', '#f0b070', '%', 10);
+
+  drawCompareChart('chart-ip-compare',
+    krus.us_ip, krus.kr_export, '🇺🇸 미국 산업생산 YoY', '🇰🇷 한국 상품수출 YoY (산업생산 대체)',
+    '#5dcaa5', '#f0b070', '%', 10);
+
+  // KRW/USD 단일
+  renderKrwStats(krus.krw_usd);
+  drawCommodityChart('chart-krw', krus.krw_usd, '#a78bfa', 5);
+
+  // 금리차 비교
+  renderSpreadStats(krus);
+  drawCompareChart('chart-spread-compare',
+    krus.spread_10y, krus.spread_rate, '10Y 금리차', '정책금리차',
+    '#5dcaa5', '#f0b070', '%p', 5);
+}
+
+
+
+// ── 모바일 감지 헬퍼 ──
+function isMobile() {
+  return window.innerWidth <= 768;
+}
+function maxTicks() {
+  if (window.innerWidth <= 480) return 3;
+  if (window.innerWidth <= 768) return 4;
+  return 6;
+}
+
+// ── 연동 크로스헤어 (가격차트 ↔ RSI차트 동기화) ──
+// 각 key별로 [priceChart, rsiChart] 쌍을 관리
+const linkedCharts = {};  // { 'spy': {price: chartObj, rsi: chartObj}, ... }
+
+function drawCrosshair(chart, x) {
+  const { ctx, chartArea } = chart;
+  if (!chartArea) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.setLineDash([4, 3]);
+  ctx.strokeStyle = 'rgba(200,200,200,0.5)';
+  ctx.lineWidth = 1;
+  ctx.moveTo(x, chartArea.top);
+  ctx.lineTo(x, chartArea.bottom);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function getChartIndexByX(chart, offsetX) {
+  // x픽셀 위치에서 가장 가까운 데이터 인덱스 반환
+  const { left, right } = chart.chartArea;
+  const pct = Math.max(0, Math.min(1, (offsetX - left) / (right - left)));
+  return Math.round(pct * (chart.data.labels.length - 1));
+}
+
+function getPixelByDate(chart, dateStr) {
+  // 날짜 문자열로 해당 인덱스의 x픽셀 반환 (가장 가까운 날짜 매칭)
+  const labels = chart.data.labels;
+  // 정확히 일치하는 인덱스 먼저 찾기
+  let idx = labels.indexOf(dateStr);
+  if (idx === -1) {
+    // 없으면 가장 가까운 날짜 찾기
+    let minDiff = Infinity;
+    const target = new Date(dateStr).getTime();
+    labels.forEach((l, i) => {
+      const diff = Math.abs(new Date(l).getTime() - target);
+      if (diff < minDiff) { minDiff = diff; idx = i; }
+    });
+  }
+  if (idx === -1) return null;
+  return { idx, x: chart.scales.x.getPixelForValue(idx) };
+}
+
+function syncCrosshair(sourceChart, rsiChart, event) {
+  if (!rsiChart || !sourceChart) return;
+
+  // 소스 차트에서 커서 위치의 날짜 찾기
+  const srcIdx = getChartIndexByX(sourceChart, event.offsetX);
+  const dateStr = sourceChart.data.labels[srcIdx];
+
+  // RSI 차트에서 같은 날짜의 픽셀 위치 찾기
+  const rsiMatch = getPixelByDate(rsiChart, dateStr);
+
+  sourceChart.draw();
+  rsiChart.draw();
+  drawCrosshair(sourceChart, event.offsetX);
+
+  if (rsiMatch) {
+    drawCrosshair(rsiChart, rsiMatch.x);
+    rsiChart.tooltip.setActiveElements(
+      [{ datasetIndex: 0, index: rsiMatch.idx }],
+      { x: rsiMatch.x, y: 0 }
+    );
+    rsiChart.update('none');
+  }
+}
+
+function getOffsetX(e, canvas) {
+  // 마우스 또는 터치 이벤트 모두 처리
+  if (e.touches) {
+    const rect = canvas.getBoundingClientRect();
+    return e.touches[0].clientX - rect.left;
+  }
+  return e.offsetX;
+}
+
+function attachCrosshairSync(key) {
+  const pair = linkedCharts[key];
+  if (!pair || !pair.price || !pair.rsi) return;
+
+  const priceCanvas = document.getElementById('chart-' + key);
+  const rsiCanvas   = document.getElementById('rsi-chart-' + key);
+  if (!priceCanvas || !rsiCanvas) return;
+
+  function onPriceMove(e) {
+    if (e.cancelable) e.preventDefault();
+    const offsetX = getOffsetX(e, priceCanvas);
+    syncCrosshair(pair.price, pair.rsi, { offsetX });
+  }
+  function onPriceLeave() {
+    pair.price.draw(); pair.rsi.draw();
+    pair.rsi.tooltip.setActiveElements([], {}); pair.rsi.update('none');
+  }
+  function onRsiMove(e) {
+    if (e.cancelable) e.preventDefault();
+    const offsetX = getOffsetX(e, rsiCanvas);
+
+    // RSI 차트에서 커서 위치의 날짜 찾기
+    const rsiIdx = getChartIndexByX(pair.rsi, offsetX);
+    const dateStr = pair.rsi.data.labels[rsiIdx];
+
+    // 가격 차트에서 같은 날짜의 픽셀 위치 찾기
+    const priceMatch = getPixelByDate(pair.price, dateStr);
+
+    pair.price.draw(); pair.rsi.draw();
+    drawCrosshair(pair.rsi, offsetX);
+
+    if (priceMatch) {
+      drawCrosshair(pair.price, priceMatch.x);
+      pair.price.tooltip.setActiveElements(
+        [{ datasetIndex: 0, index: priceMatch.idx }],
+        { x: priceMatch.x, y: 0 }
+      );
+      pair.price.update('none');
+    }
+  }
+  function onRsiLeave() {
+    pair.price.draw(); pair.rsi.draw();
+    pair.price.tooltip.setActiveElements([], {}); pair.price.update('none');
+  }
+
+  // 마우스 이벤트
+  priceCanvas.onmousemove  = onPriceMove;
+  priceCanvas.onmouseleave = onPriceLeave;
+  rsiCanvas.onmousemove    = onRsiMove;
+  rsiCanvas.onmouseleave   = onRsiLeave;
+
+  // 터치 이벤트 (모바일)
+  priceCanvas.addEventListener('touchmove',  onPriceMove,  { passive: false });
+  priceCanvas.addEventListener('touchend',   onPriceLeave, { passive: true  });
+  rsiCanvas.addEventListener('touchmove',    onRsiMove,    { passive: false });
+  rsiCanvas.addEventListener('touchend',     onRsiLeave,   { passive: true  });
+}
+
+// ── RSI 렌더링 ──
+function classifyRSI(val) {
+  if (val >= 70) return { label: '과매수 (70+)', cls: 'overbought' };
+  if (val >= 60) return { label: '강세 (60–70)', cls: 'upper' };
+  if (val >= 40) return { label: '중립 (40–60)', cls: 'neutral' };
+  if (val >= 30) return { label: '약세 (30–40)', cls: 'lower' };
+  return            { label: '과매도 (–30)', cls: 'oversold' };
+}
+
+function renderRSI(key, data, defaultYears) {
+  const canvasId = 'rsi-chart-' + key;
+  const ctx = document.getElementById(canvasId);
+  if (!ctx || !data || !data.rsi) return;
+
+  const rsi     = data.rsi;
+  const current = rsi.current;
+  const cls     = classifyRSI(current);
+
+  // 헤더 업데이트
+  const valEl   = document.getElementById('rsi-val-' + key);
+  const badgeEl = document.getElementById('rsi-badge-' + key);
+  if (valEl)   valEl.textContent   = current.toFixed(1);
+  if (badgeEl) { badgeEl.textContent = cls.label; badgeEl.className = 'rsi-badge ' + cls.cls; }
+
+  // 차트
+  if (charts[canvasId]) charts[canvasId].destroy();
+
+  let history = rsi.history || [];
+  if (defaultYears) {
+    const cutoff = new Date();
+    cutoff.setFullYear(cutoff.getFullYear() - defaultYears);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    history = history.filter(d => d.date >= cutoffStr);
+  }
+
+  const labels = history.map(d => d.date);
+  const values = history.map(d => d.close);
+
+  charts[canvasId] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: values,
+        borderColor: '#a78bfa',
+        backgroundColor: 'rgba(167,139,250,0.08)',
+        borderWidth: 1.2,
+        pointRadius: 0,
+        pointHoverRadius: 3,
+        fill: true,
+        tension: 0.2,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#14171c', titleColor: '#ccc', bodyColor: '#fff',
+          borderColor: '#2a2e35', borderWidth: 1, padding: 8, displayColors: false,
+          callbacks: { label: ctx => 'RSI(21): ' + ctx.parsed.y.toFixed(1) }
+        },
+        annotation: undefined,
+      },
+      scales: {
+        x: { display: false },
+        y: {
+          position: 'right',
+          min: 0, max: 100,
+          ticks: { color: '#666', font: { size: 9 }, stepSize: 25 },
+          grid: { color: '#1f2228' },
+        }
+      }
+    }
+  });
+
+  // 과매수/과매도 기준선 (Plugin 없이 afterDraw로 직접 그리기)
+  const chart = charts[canvasId];
+  const originalDraw = chart.draw.bind(chart);
+  chart.draw = function() {
+    originalDraw();
+    const { ctx: c, chartArea, scales } = chart;
+    if (!chartArea) return;
+    const yScale = scales.y;
+    [30, 70].forEach(level => {
+      const y = yScale.getPixelForValue(level);
+      c.save();
+      c.setLineDash([4, 3]);
+      c.strokeStyle = level === 70 ? 'rgba(240,149,149,0.5)' : 'rgba(192,221,151,0.5)';
+      c.lineWidth = 1;
+      c.beginPath();
+      c.moveTo(chartArea.left, y);
+      c.lineTo(chartArea.right, y);
+      c.stroke();
+      c.restore();
+    });
+  };
+  chart.draw();
+
+  // linkedCharts에 RSI 차트 등록 후 크로스헤어 연동
+  if (!linkedCharts[key]) linkedCharts[key] = {};
+  linkedCharts[key].rsi = chart;
+  // 두 차트가 모두 준비됐으면 이벤트 연결
+  if (linkedCharts[key].price) {
+    setTimeout(() => attachCrosshairSync(key), 100);
+  }
+}
+
+// ── 라이트/다크 테마 전환 ──
+function toggleTheme() {
+  const body = document.body;
+  const btn  = document.getElementById('theme-btn');
+  const isLight = body.classList.toggle('light');
+  btn.textContent = isLight ? '🌙 다크' : '☀️ 라이트';
+  localStorage.setItem('theme', isLight ? 'light' : 'dark');
+  // 차트 재렌더 (색상 업데이트)
+  const statusEl = document.getElementById('status');
+  if (statusEl && statusEl.className.includes('ok')) {
+    // 이미 데이터 있으면 차트 색만 갱신
+    Object.keys(charts).forEach(k => { if (charts[k]) charts[k].update(); });
+  }
+}
+// 저장된 테마 복원
+(function() {
+  const saved = localStorage.getItem('theme');
+  if (saved === 'light') {
+    document.body.classList.add('light');
+    const btn = document.getElementById('theme-btn');
+    if (btn) btn.textContent = '🌙 다크';
+  }
+})();
+
+// ── Composite 계산 과정 토글 ──
+function toggleCompositeDetail() {
+  const panel  = document.getElementById('composite-detail-panel');
+  const toggle = document.querySelector('.composite-toggle');
+  if (!panel) return;
+  const isOpen = panel.classList.toggle('open');
+  if (toggle) toggle.textContent = isOpen ? '▾ 계산 과정 닫기' : '▸ 계산 과정 보기';
+}
+
+// ── 탭 전환 ──
+function switchTab(name, btn) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  btn.classList.add('active');
+}
+
+</script>
+
+</body>
+</html>
