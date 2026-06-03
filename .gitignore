@@ -1,0 +1,19 @@
+# API 키 — 절대 GitHub에 올라가면 안 됨
+config.py
+
+# Python 실행 파일
+find_ecos_codes.py
+run_dashboard.py
+fetch_data.py
+
+# 로컬 전용 파일
+history.csv
+ecos_result*.txt
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# 시스템 파일
+.DS_Store
+Thumbs.db
